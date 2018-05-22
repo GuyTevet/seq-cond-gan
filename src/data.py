@@ -1,6 +1,7 @@
 ##header here
 
 import os
+import random
 
 #consts
 ASCII_OFFSET = 32
@@ -25,13 +26,17 @@ def tag2char(tag):
 def text2sents(text):
     return text.split('\n')
 
-def text2feed_tags(text,max_len=32):
+def text2feed_tags(text, is_var_len=True, max_len=32):
     sents = text2sents(text)
     feed_tags = []
 
     for sent in sents:
         tags = [START_TAG] + ([END_TAG] * (max_len + 1))
-        for i, char in enumerate(sent[:max_len]):
+        if is_var_len == True:
+            len = random.randrange(1,max_len+1)
+        else:
+            len = max_len
+        for i, char in enumerate(sent[:len]):
             tags[i+1] = char2tag(char)
         feed_tags.append(tags)
 
@@ -69,5 +74,9 @@ def test():
     feed_tags = text2feed_tags(text[:100000],max_len=64)
 
 
+
 if __name__ == '__main__':
+    # for i in range(1000):
+    #     print(random.randrange(1, 32 + 1))
     test()
+
