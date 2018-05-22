@@ -10,7 +10,7 @@ START_TAG = UNK_TAG + 1
 END_TAG = UNK_TAG + 2
 
 def char2tag(char):
-    assert isinstance(char, basestring)
+    assert type(char) == str
     assert len(char) == 1
     tag = ord(char) - ASCII_OFFSET
     if tag < 0 or tag > (ASCII_LEN - 1):
@@ -43,7 +43,7 @@ def test():
 
     for char in 'hello world':
         tag = char2tag(char)
-        print str(tag) + '\t' + tag2char(tag)
+        print(str(tag) + '\t' + tag2char(tag))
 
     chars = [tag2char(i) for i in range(ASCII_LEN + 1)]
     hist = [0] * (ASCII_LEN + 1)
@@ -52,14 +52,19 @@ def test():
     with open(sanity_text_path,'r') as file:
         text = file.read()
         sents = text2sents(text)
-        print 'sanity text len: ' + str(len(text))
+        print('sanity text len: ' + str(len(text)))
 
-    for sent in sents[:1000]:
+    for sent in sents[:100000]:
         for char in sent:
             hist[char2tag(char)] += 1
 
     for i in range(len(chars)):
-        print chars[i] + '\t' + str(hist[i])
+        print(chars[i] + '\t' + str(hist[i]))
+
+    print('rare tags')
+    for i in range(len(chars)):
+        if hist[i] < 10:
+            print(chars[i] + '\t' + str(hist[i]) + '\t' + str(ord(chars[i])))
 
     feed_tags = text2feed_tags(text[:100000],max_len=64)
 
