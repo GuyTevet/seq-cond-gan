@@ -29,7 +29,7 @@ def text2sents(text):
 def text2feed_tags(text, is_var_len=True, max_len=32):
     sents = text2sents(text)
     feed_tags = []
-
+    len_list = []
     for sent in sents:
         tags = [START_TAG] + ([END_TAG] * (max_len + 1))
         if is_var_len == True:
@@ -39,8 +39,32 @@ def text2feed_tags(text, is_var_len=True, max_len=32):
         for i, char in enumerate(sent[:len]):
             tags[i+1] = char2tag(char)
         feed_tags.append(tags)
+        len_list.append(len)
+    return feed_tags , len_list
 
-    return feed_tags
+def create_text_mask(len_list,max_len=32,mode='th_extended'):
+    mask_list = []
+    for length in len_list:
+        if mode == 'th_legacy':
+            window_size = 1
+            window_offset = length - 1
+        elif mode == 'th_extended':
+            window_size = random.randrange(1,length+1)
+            window_offset = random.randrange(0,length-window_size+1)
+        elif mode == 'full':
+            window_size = length
+            window_offset = 1
+        else:
+            raise TypeError('supported modes are {th_legacy,th_extended,full}')
+        
+        mask = [0] * (window_offset + 1) + [1] * (window_size) + [0] * (max_len - window_size - window_offset + 1)
+        assert len(mask) == max_len + 2
+        mask_list.append(mask)
+
+
+
+    return mask_list
+
 
 def test():
 
@@ -59,7 +83,7 @@ def test():
         sents = text2sents(text)
         print('sanity text len: ' + str(len(text)))
 
-    for sent in sents[:100000]:
+    for sent in sents[:10000]:
         for char in sent:
             hist[char2tag(char)] += 1
 
@@ -71,12 +95,12 @@ def test():
         if hist[i] < 10:
             print(chars[i] + '\t' + str(hist[i]) + '\t' + str(ord(chars[i])))
 
-    feed_tags = text2feed_tags(text[:100000],max_len=64)
+    feed_tags , len_list = text2feed_tags(text[:100000],is_var_len=True,max_len=32)
+    mask_list = create_text_mask(len_list,max_len=32,mode='th_legacy')
+
 
 
 
 if __name__ == '__main__':
-    # for i in range(1000):
-    #     print(random.randrange(1, 32 + 1))
     test()
 
