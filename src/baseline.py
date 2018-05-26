@@ -7,12 +7,13 @@ import os
 import time
 import tensorflow as tf
 import numpy as np
+import consts
 
 from ops import *
 from utils import *
 
 class baseline(object):
-    model_name = "WGAN_GP"     # name for checkpoint
+    model_name = "baseline"     # name for checkpoint
 
     def __init__(self, sess, epoch, batch_size, z_dim, dataset_name, checkpoint_dir, result_dir, log_dir):
         self.sess = sess
@@ -25,10 +26,13 @@ class baseline(object):
 
         if dataset_name == 'mnist' or dataset_name == 'fashion-mnist':
             # parameters
-            self.input_height = 28
-            self.input_width = 28
-            self.output_height = 28
-            self.output_width = 28
+            # self.input_height = 28
+            # self.input_width = 28
+            # self.output_height = 28
+            # self.output_width = 28
+            self.embed_size = 512
+            self.hidden_size = self.embed_size
+            self.dropout_rate = 0.5
 
             self.z_dim = z_dim         # dimension of noise-vector
             self.c_dim = 1
@@ -45,7 +49,7 @@ class baseline(object):
             self.sample_num = 64  # number of generated images to be saved
 
             # load mnist
-            self.data_X, self.data_y = load_mnist(self.dataset_name)
+            # self.data_X, self.data_y = load_mnist(self.dataset_name)
 
             # get number of batches for a single epoch
             self.num_batches = len(self.data_X) // self.batch_size
@@ -66,18 +70,50 @@ class baseline(object):
 
             return out, out_logit, net
 
-    def generator(self, z, is_training=True, reuse=False):
+    def generator(self, z, data, mask, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
         # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
         with tf.variable_scope("generator", reuse=reuse):
-            net = tf.nn.relu(bn(linear(z, 1024, scope='g_fc1'), is_training=is_training, scope='g_bn1'))
-            net = tf.nn.relu(bn(linear(net, 128 * 7 * 7, scope='g_fc2'), is_training=is_training, scope='g_bn2'))
-            net = tf.reshape(net, [self.batch_size, 7, 7, 128])
-            net = tf.nn.relu(
-                bn(deconv2d(net, [self.batch_size, 14, 14, 64], 4, 4, 2, 2, name='g_dc3'), is_training=is_training,
-                   scope='g_bn3'))
 
-            out = tf.nn.sigmoid(deconv2d(net, [self.batch_size, 28, 28, 1], 4, 4, 2, 2, name='g_dc4'))
+            data_len = data.shape[1] #max_len+2
+
+            #define embedding matrix
+            g_embeddings = tf.get_variable(name='g_embeddings', shape=[consts.TAG_NUM, self.embed_size], dtype=tf.float32,
+                                         initializer=tf.contrib.layers.xavier_initilizer()) #dims=[tag_num,embed_size]
+
+            #get embeddings of the real data
+            data_embeddings = tf.nn.embedding_lookup(g_embeddings, data, name='data_embeddings') #dims=[bs,max_len+2,embed_size]
+
+            #get one hot vectors of the real data
+            data_one_hot = tf.one_hot(data, consts.TAG_NUM, axis=2, dtype=tf.float32, name='data_one_hot') #dims=[bs,max_len+2,tag_num]
+
+            #init placeholders to output probabilities of the network and the final output
+            output_prob = tf.constant(value=np.zeros([self.batch_size, data_len, consts.TAG_NUM]), dtype=tf.float32,
+                                      name='output_prob') #dims=[bs,max_len+2,tag_num]
+            out = tf.constant(value=np.zeros([self.batch_size, data_len, consts.TAG_NUM]), dtype=tf.float32,
+                              name='out')  # dims=[bs,max_len+2,tag_num]
+
+            #instance GRU and the hidden state vector
+            with tf.variable_scope("g_gru", reuse=reuse):
+                GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
+                h = tf.get_variable(name='h', shape=self.hidden_size, dtype=tf.float32, initializer=z) #dims=hidden_size
+
+            for i, tag in enumerate(data):
+                if i > 0:
+                    tf.get_variable_scope().reuse_variables()
+                    output_embeddings = tf.matmul(output_prob[:, i-1, :], g_embeddings, name='output_embeddings') #dims=[bs,embed_size]
+                x_data = tf.multiply(1-mask[:, i], data_embeddings[:, i, :]) #dims=[bs,embed_size]
+                x_gen = tf.multiply(mask[:, i], output_embeddings) #dims=[bs,embed_size]
+                x = x_data + x_gen #dims=[bs,embed_size]
+                o_t, h_t = GRU(x, h)
+                o_drop_t = tf.nn.dropout(o_t, self.dropout_rate, name='o_drop_t')
+                g_logits = linear(o_drop_t, consts.TAG_NUM, scope='g_fc')
+                if i < data_len - 1: #max_len+1
+                    output_prob[:, i+1, :] = tf.nn.softmax(g_logits)
+
+                out_data = tf.multiply(1-mask[:, i], data_one_hot)
+                out_gen = tf.multiply(mask[:, i], output_prob)
+                out[:, i, :] = out_data + out_gen
 
             return out
 
