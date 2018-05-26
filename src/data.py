@@ -61,10 +61,21 @@ def create_text_mask(len_list,max_len=32,mode='th_extended'):
         assert len(mask) == max_len + 2
         mask_list.append(mask)
 
-
-
     return mask_list
 
+def load_sanity_data():
+    sanity_text_path = os.path.join('..', 'data', 'europarl-v6.en')
+    with open(sanity_text_path,'r', encoding='utf8') as file:
+        text = file.read()
+    return text[:1000000]
+
+def create_shuffle_data(text,max_len,mode):
+    feed_tags , len_list = text2feed_tags(text,is_var_len=True,max_len=max_len)
+    mask_list = create_text_mask(len_list,max_len=max_len,mode=mode)
+    combined = list(zip(feed_tags, mask_list))
+    random.shuffle(combined)
+    feed_tags[:], len_list[:] = zip(*combined)
+    return mask_list , feed_tags
 
 def test():
 
@@ -95,10 +106,12 @@ def test():
         if hist[i] < 10:
             print(chars[i] + '\t' + str(hist[i]) + '\t' + str(ord(chars[i])))
 
-    feed_tags , len_list = text2feed_tags(text[:100000],is_var_len=True,max_len=32)
-    mask_list = create_text_mask(len_list,max_len=32,mode='th_legacy')
+    # feed_tags , len_list = text2feed_tags(text[:100000],is_var_len=True,max_len=32)
+    # mask_list = create_text_mask(len_list,max_len=32,mode='th_legacy')
 
-
+    text = load_sanity_data()
+    mask_list, feed_tags = create_shuffle_data(text,max_len=32,mode='th_extended')
+    a=1
 
 
 if __name__ == '__main__':
