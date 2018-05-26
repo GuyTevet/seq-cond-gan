@@ -56,21 +56,39 @@ class baseline(object):
         else:
             raise NotImplementedError
 
-    def discriminator(self, x, is_training=True, reuse=False):
+    def discriminator(self, x, seq_len, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
         # Architecture : (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
         with tf.variable_scope("discriminator", reuse=reuse):
+            # net = lrelu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
+            # net = lrelu(bn(conv2d(net, 128, 4, 4, 2, 2, name='d_conv2'), is_training=is_training, scope='d_bn2'))
+            # net = tf.reshape(net, [self.batch_size, -1])
+            # net = lrelu(bn(linear(net, 1024, scope='d_fc3'), is_training=is_training, scope='d_bn3'))
+            # out_logit = linear(net, 1, scope='d_fc4')
+            # out = tf.nn.sigmoid(out_logit)
+            #define embedding matrix
+            d_embeddings = tf.get_variable(name='d_embeddings', shape=[consts.TAG_NUM, self.embed_size], dtype=tf.float32,
+                                         initializer=tf.contrib.layers.xavier_initilizer()) #dims=[tag_num,embed_size]
 
-            net = lrelu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
-            net = lrelu(bn(conv2d(net, 128, 4, 4, 2, 2, name='d_conv2'), is_training=is_training, scope='d_bn2'))
-            net = tf.reshape(net, [self.batch_size, -1])
-            net = lrelu(bn(linear(net, 1024, scope='d_fc3'), is_training=is_training, scope='d_bn3'))
-            out_logit = linear(net, 1, scope='d_fc4')
-            out = tf.nn.sigmoid(out_logit)
+            # instance GRU and the hidden state vector
+            with tf.variable_scope("d_gru", reuse=reuse):
+                GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
+                h = tf.get_variable(name='h', shape=self.hidden_size, dtype=tf.float32,initializer=np.zeros([self.hidden_size])) #dims=hidden_size
 
-            return out, out_logit, net
+                # get embeddings of the input data
+                input_embeddings = tf.matmul(x, d_embeddings, name='input_embeddings')  #dims=[bs,max_len+2,embed_size]
 
-    def generator(self, z, data, mask, is_training=True, reuse=False):
+                for i in range(seq_len):
+                    if i > 0:
+                        tf.get_variable_scope().reuse_variables()
+                    o_t, h_t = GRU(input_embeddings[:, i, :], h)
+                final_state_drop = tf.nn.dropout(o_t, self.dropout_rate, name='final_state_drop')
+                out_logit = linear(final_state_drop, 1, scope='d_fc')
+                out = tf.nn.sigmoid(out_logit)
+
+            return out, out_logit, final_state_drop
+
+    def generator(self, z, data, mask, seq_len, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
         # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
         with tf.variable_scope("generator", reuse=reuse):
@@ -98,7 +116,7 @@ class baseline(object):
                 GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
                 h = tf.get_variable(name='h', shape=self.hidden_size, dtype=tf.float32, initializer=z) #dims=hidden_size
 
-            for i, tag in enumerate(data):
+            for i in range(seq_len):
                 if i > 0:
                     tf.get_variable_scope().reuse_variables()
                     output_embeddings = tf.matmul(output_prob[:, i-1, :], g_embeddings, name='output_embeddings') #dims=[bs,embed_size]
