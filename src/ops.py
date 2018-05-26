@@ -81,3 +81,34 @@ def linear(input_, output_size, scope=None, stddev=0.02, bias_start=0.0, with_w=
             return tf.matmul(input_, matrix) + bias, matrix, bias
         else:
             return tf.matmul(input_, matrix) + bias
+
+
+def gru(previous_hidden_state, x, scope=None):
+
+
+    with tf.variable_scope(scope or "GRU"):
+
+        input_shape = x.get_shape().as_list()
+        hidden_layer_shape = previous_hidden_state.get_shape().as_list()
+
+        Wz = tf.get_variable('Wz',shape=[input_shape[1],hidden_layer_shape[0]],dtype=tf.float32,initializer=tf.contrib.layers.xavier_initilizer())
+        bz = tf.get_variable('bz',shape=[hidden_layer_shape[0]],dtype=tf.float32,initializer=tf.contrib.layers.xavier_initilizer())
+        Wr = tf.get_variable('Wr',shape=[input_shape[1],hidden_layer_shape[0]],dtype=tf.float32,initializer=tf.contrib.layers.xavier_initilizer())
+        br = tf.get_variable('br',shape=[hidden_layer_shape[0]],dtype=tf.float32,initializer=tf.contrib.layers.xavier_initilizer())
+        Wx = tf.get_variable('Wx',shape=[input_shape[1],hidden_layer_shape[0]],dtype=tf.float32,initializer=tf.contrib.layers.xavier_initilizer())
+        Wh = tf.get_variable('Wh',shape=[hidden_layer_shape[0],hidden_layer_shape[0]],dtype=tf.float32,initializer=tf.contrib.layers.xavier_initilizer())
+        Wo = tf.get_variable('Wo',shape=[hidden_layer_shape[0],hidden_layer_shape[0]],dtype=tf.float32,initializer=tf.contrib.layers.xavier_initilizer())
+        bo = tf.get_variable('bo',shape=[hidden_layer_shape[0]],dtype=tf.float32,initializer=tf.contrib.layers.xavier_initilizer())
+
+        z = tf.sigmoid(tf.matmul(x, Wz) + bz)
+        r = tf.sigmoid(tf.matmul(x, Wr) + br)
+
+        h_ = tf.tanh(tf.matmul(x, Wx) +
+                     tf.matmul(previous_hidden_state, Wh) * r)
+
+        current_hidden_state = tf.multiply(
+            (1 - z), h_) + tf.multiply(previous_hidden_state, z)
+
+        output = tf.nn.relu(tf.matmul(current_hidden_state, Wo) + bo)
+
+        return current_hidden_state , output
