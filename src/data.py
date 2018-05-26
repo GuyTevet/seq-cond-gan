@@ -53,7 +53,7 @@ def create_text_mask(len_list,max_len=32,mode='th_extended'):
             window_offset = random.randrange(0,length-window_size+1)
         elif mode == 'full':
             window_size = length
-            window_offset = 1
+            window_offset = 0
         else:
             raise TypeError('supported modes are {th_legacy,th_extended,full}')
         
@@ -110,7 +110,7 @@ def test():
     # mask_list = create_text_mask(len_list,max_len=32,mode='th_legacy')
 
     text = load_sanity_data()
-    mask_list, feed_tags = create_shuffle_data(text,max_len=32,mode='th_extended')
+    mask_list, feed_tags = create_shuffle_data(text,max_len=32,mode='full')
     a=1
 
 
