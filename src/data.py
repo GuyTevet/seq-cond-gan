@@ -26,12 +26,12 @@ def tag2char(tag):
 def text2sents(text):
     return text.split('\n')
 
-def text2feed_tags(text, is_var_len=True, max_len=32):
+def text2feed_tags(text, is_var_len=True, max_len=32, seq_len=32):
     sents = text2sents(text)
     feed_tags = []
     len_list = []
     for sent in sents:
-        tags = [START_TAG] + ([END_TAG] * (max_len + 1))
+        tags = [START_TAG] + ([END_TAG] * (seq_len + 1))
         if is_var_len == True:
             len = random.randrange(1,max_len+1)
         else:
@@ -42,7 +42,7 @@ def text2feed_tags(text, is_var_len=True, max_len=32):
         len_list.append(len)
     return feed_tags , len_list
 
-def create_text_mask(len_list,max_len=32,mode='th_extended'):
+def create_text_mask(len_list,seq_len=32,mode='th_extended'):
     mask_list = []
     for length in len_list:
         if mode == 'th_legacy':
@@ -57,8 +57,8 @@ def create_text_mask(len_list,max_len=32,mode='th_extended'):
         else:
             raise TypeError('supported modes are {th_legacy,th_extended,full}')
         
-        mask = [0] * (window_offset + 1) + [1] * (window_size) + [0] * (max_len - window_size - window_offset + 1)
-        assert len(mask) == max_len + 2
+        mask = [0] * (window_offset + 1) + [1] * (window_size) + [0] * (seq_len - window_size - window_offset + 1)
+        assert len(mask) == seq_len + 2
         mask_list.append(mask)
 
 
@@ -71,9 +71,9 @@ def load_sanity_data():
         text = file.read()
     return text[:1000000]
 
-def create_shuffle_data(text,max_len,mode):
-    feed_tags , len_list = text2feed_tags(text,is_var_len=True,max_len=max_len)
-    mask_list = create_text_mask(len_list,max_len=max_len,mode=mode)
+def create_shuffle_data(text,max_len,seq_len,mode):
+    feed_tags , len_list = text2feed_tags(text,is_var_len=True,max_len=max_len,seq_len=seq_len)
+    mask_list = create_text_mask(len_list,seq_len=seq_len,mode=mode)
     combined = list(zip(feed_tags, mask_list))
     random.shuffle(combined)
     feed_tags[:], len_list[:] = zip(*combined)
@@ -112,7 +112,7 @@ def test():
     # mask_list = create_text_mask(len_list,max_len=32,mode='th_legacy')
 
     text = load_sanity_data()
-    mask_list, feed_tags = create_shuffle_data(text,max_len=32,mode='full')
+    mask_list, feed_tags = create_shuffle_data(text,max_len=4,seq_len=32,mode='full')
     a=1
 
 

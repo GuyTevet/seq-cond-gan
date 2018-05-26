@@ -31,6 +31,7 @@ class baseline(object):
             self.hidden_size = self.embed_size
             self.dropout_rate = 0.5
             self.z_dim = self.hidden_size
+            self.seq_len = 32
 
             # WGAN_GP parameter
             self.lambd = 0.25       # The higher value, the more stable, but the slower convergence
@@ -45,31 +46,32 @@ class baseline(object):
 
             # load sanity_data
             # self.data_X, self.data_y = load_mnist(self.dataset_name)
-            feed_tags, len_list = text2feed_tags(text[:100000], is_var_len=True, max_len=32)
-            mask_list = create_text_mask(len_list, max_len=32, mode='full')
 
             # get number of batches for a single epoch
-            self.num_batches = len(self.data_X) // self.batch_size
+            # self.num_batches = len(self.data_X) // self.batch_size
         else:
             raise NotImplementedError
 
-    def discriminator(self, x, seq_len, is_training=True, reuse=False):
+    def discriminator(self, x, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
         # Architecture : (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
         with tf.variable_scope("discriminator", reuse=reuse):
             #define embedding matrix
             d_embeddings = tf.get_variable(name='d_embeddings', shape=[consts.TAG_NUM, self.embed_size], dtype=tf.float32,
-                                         initializer=tf.contrib.layers.xavier_initilizer()) #dims=[tag_num,embed_size]
+                                         initializer=tf.contrib.layers.xavier_initializer()) #dims=[tag_num,embed_size]
 
             # instance GRU and the hidden state vector
             with tf.variable_scope("d_gru", reuse=reuse):
                 GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
-                h = tf.get_variable(name='h', shape=self.hidden_size, dtype=tf.float32,initializer=np.zeros([self.hidden_size])) #dims=hidden_size
+                h = tf.get_variable(name='h', dtype=tf.float32,
+                                    initializer=np.zeros([self.hidden_size, 1], dtype=np.float32)) #dims=hidden_size
 
                 # get embeddings of the input data
-                input_embeddings = tf.matmul(x, d_embeddings, name='input_embeddings')  #dims=[bs,max_len+2,embed_size]
+                input_embeddings = tf.reshape(tf.matmul(tf.reshape(x, [-1, consts.TAG_NUM]), d_embeddings, name='input_embeddings'),
+                                                        [self.batch_size, self.seq_len+2, self.embed_size])  #dims=[bs,max_len+2,embed_size]
+                GRU.build(tf.shape(input_embeddings[:, 0, :]))
 
-                for i in range(seq_len):
+                for i in range(self.seq_len):
                     if i > 0:
                         tf.get_variable_scope().reuse_variables()
                     o_t, h_t = GRU(input_embeddings[:, i, :], h)
@@ -79,7 +81,7 @@ class baseline(object):
 
             return out, out_logit, final_state_drop
 
-    def generator(self, z, data, mask, seq_len, is_training=True, reuse=False):
+    def generator(self, z, data, mask, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
         # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
         with tf.variable_scope("generator", reuse=reuse):
@@ -107,7 +109,7 @@ class baseline(object):
                 GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
                 h = tf.get_variable(name='h', shape=self.hidden_size, dtype=tf.float32, initializer=z) #dims=hidden_size
 
-            for i in range(seq_len):
+            for i in range(self.seq_len):
                 if i > 0:
                     tf.get_variable_scope().reuse_variables()
                     output_embeddings = tf.matmul(output_prob[:, i-1, :], g_embeddings, name='output_embeddings') #dims=[bs,embed_size]
@@ -133,16 +135,17 @@ class baseline(object):
 
         """ Graph Input """
         # generator inputs
-        self.generator_input = tf.placeholder(tf.float32, shape=[None, None], dtype=tf.int32, name='generator_input')
-        self.generator_mask = tf.placeholder(tf.float32, shape=[None, None], dtype=tf.int32, name='generator_mask')
-        self.z = tf.placeholder(tf.float32, shape=[None, self.hidden_size], name='z')
+        self.generator_input = tf.placeholder(shape=[self.batch_size, self.seq_len+2], dtype=tf.int32, name='generator_input')
+        self.generator_mask = tf.placeholder(shape=[self.batch_size, self.seq_len+2], dtype=tf.int32, name='generator_mask')
+        self.z = tf.placeholder(tf.float32, shape=[self.batch_size, self.hidden_size], name='z')
 
         # discrimnator input
-        self.discrimnator_input = tf.placeholder(tf.float32, shape=[None, None], dtype=tf.int32, name='discrimnator_input')
+        self.discrimnator_input = tf.placeholder(shape=[self.batch_size, self.seq_len+2], dtype=tf.int32, name='discrimnator_input')
+        self.discrimnator_input_one_hot = tf.one_hot(self.discrimnator_input, dtype=tf.float32, depth=consts.TAG_NUM)
 
         """ Loss Function """
         # output of D for real images
-        D_real, D_real_logits, _ = self.discriminator(self.discrimnator_input, is_training=True, reuse=False)
+        D_real, D_real_logits, _ = self.discriminator(self.discrimnator_input_one_hot, is_training=True, reuse=False)
 
         # output of D for fake images
         G = self.generator(self.z, self.generator_input, self.generator_mask, is_training=True, reuse=False)
@@ -212,6 +215,10 @@ class baseline(object):
         # load text
         self.text = data.load_sanity_data()
 
+        # temp FIXME
+        feed_tags, mask_list = data.create_shuffle_text(self.text, max_len=1, mode='th_extended')
+        self.num_batches = len(feed_tags) // self.batch_size
+
         # restore check-point if it exits
         could_load, checkpoint_counter = self.load(self.checkpoint_dir)
         if could_load:
@@ -232,22 +239,31 @@ class baseline(object):
         assert(self.epoch == len(max_len_list))
         for epoch in range(start_epoch, self.epoch):
             #arrange data
-            feed_tags, mask_list = data.create_shuffle_text(self.text, max_len=max_len_list[epoch], mode='th_extended')
+            feed_tags, mask_list = data.create_shuffle_text(self.text, max_len=max_len_list[epoch], seq_len=self.seq_len,
+                                                            mode='th_extended')
 
             # get batch data
             for idx in range(start_batch_id, self.num_batches):
-                batch_images = self.data_X[idx*self.batch_size:(idx+1)*self.batch_size]
-                batch_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]).astype(np.float32)
+                batch_sents = feed_tags[idx*self.batch_size:(idx+1)*self.batch_size]
+                batch_sents_generator = batch_sents[:(self.batch_size/2)]
+                batch_sents_discriminator = batch_sents[(self.batch_size/2):]
+
+                batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
+                batch_mask = mask_list[idx*self.batch_size:(idx+1)*self.batch_size]
+                batch_mask_generator = batch_mask[:(self.batch_size/2)]
 
                 # update D network
                 _, summary_str, d_loss = self.sess.run([self.d_optim, self.d_sum, self.d_loss],
-                                               feed_dict={self.inputs: batch_images, self.z: batch_z})
+                                               feed_dict={self.discrimnator_input: batch_sents_discriminator,
+                                                          self.generator_input: batch_sents_generator,
+                                                          self.generator_mask: batch_mask_generator, self.z: batch_z})
                 self.writer.add_summary(summary_str, counter)
 
                 # update G network
                 if (counter-1) % self.disc_iters == 0:
-                    batch_z = np.random.uniform(-1, 1, [self.batch_size, self.z_dim]).astype(np.float32)
-                    _, summary_str, g_loss = self.sess.run([self.g_optim, self.g_sum, self.g_loss], feed_dict={self.z: batch_z})
+                    batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
+                    _, summary_str, g_loss = self.sess.run([self.g_optim, self.g_sum, self.g_loss],
+                                                           feed_dict={self.z: batch_z, self.generator_input: batch_sents_generator})
                     self.writer.add_summary(summary_str, counter)
 
                 counter += 1
