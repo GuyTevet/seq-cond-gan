@@ -61,23 +61,22 @@ class baseline(object):
                                          initializer=tf.contrib.layers.xavier_initializer()) #dims=[tag_num,embed_size]
 
             # instance GRU and the hidden state vector
-            with tf.variable_scope("d_gru", reuse=reuse):
-                GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
-                h = tf.get_variable(name='h', dtype=tf.float32,
-                                    initializer=np.zeros([self.hidden_size, 1], dtype=np.float32)) #dims=hidden_size
+            # with tf.variable_scope("d_gru", reuse=reuse):
+            #     GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
+            h = tf.get_variable(name='d_hidden', dtype=tf.float32,
+                                initializer=np.zeros([1,self.hidden_size], dtype=np.float32)) #dims=hidden_size
 
-                # get embeddings of the input data
-                input_embeddings = tf.reshape(tf.matmul(tf.reshape(x, [-1, consts.TAG_NUM]), d_embeddings, name='input_embeddings'),
-                                                        [self.batch_size, self.seq_len+2, self.embed_size])  #dims=[bs,max_len+2,embed_size]
-                GRU.build(tf.shape(input_embeddings[:, 0, :]))
-
-                for i in range(self.seq_len):
+            # get embeddings of the input data
+            input_embeddings = tf.reshape(tf.matmul(tf.reshape(x, [-1, consts.TAG_NUM]), d_embeddings, name='input_embeddings'),
+                                                    [self.batch_size, self.seq_len+2, self.embed_size])  #dims=[bs,max_len+2,embed_size]
+            with tf.variable_scope("gru", reuse=reuse):
+                for i in range(self.seq_len + 2):
                     if i > 0:
                         tf.get_variable_scope().reuse_variables()
-                    o_t, h_t = GRU(input_embeddings[:, i, :], h)
-                final_state_drop = tf.nn.dropout(o_t, self.dropout_rate, name='final_state_drop')
-                out_logit = linear(final_state_drop, 1, scope='d_fc')
-                out = tf.nn.sigmoid(out_logit)
+                    h, o_t = gru(h,input_embeddings[:,i,:])
+            final_state_drop = tf.nn.dropout(o_t, self.dropout_rate, name='final_state_drop')
+            out_logit = linear(final_state_drop, 1, scope='d_fc')
+            out = tf.nn.sigmoid(out_logit)
 
             return out, out_logit, final_state_drop
 
@@ -90,7 +89,7 @@ class baseline(object):
 
             #define embedding matrix
             g_embeddings = tf.get_variable(name='g_embeddings', shape=[consts.TAG_NUM, self.embed_size], dtype=tf.float32,
-                                         initializer=tf.contrib.layers.xavier_initilizer()) #dims=[tag_num,embed_size]
+                                         initializer=tf.contrib.layers.xavier_initializer()) #dims=[tag_num,embed_size]
 
             #get embeddings of the real data
             data_embeddings = tf.nn.embedding_lookup(g_embeddings, data, name='data_embeddings') #dims=[bs,max_len+2,embed_size]
@@ -99,32 +98,39 @@ class baseline(object):
             data_one_hot = tf.one_hot(data, consts.TAG_NUM, axis=2, dtype=tf.float32, name='data_one_hot') #dims=[bs,max_len+2,tag_num]
 
             #init placeholders to output probabilities of the network and the final output
-            output_prob = tf.constant(value=np.zeros([self.batch_size, data_len, consts.TAG_NUM]), dtype=tf.float32,
+            output_prob = tf.constant(value=np.zeros([self.batch_size, 1, consts.TAG_NUM]), dtype=tf.float32,
                                       name='output_prob') #dims=[bs,max_len+2,tag_num]
             out = tf.constant(value=np.zeros([self.batch_size, data_len, consts.TAG_NUM]), dtype=tf.float32,
                               name='out')  # dims=[bs,max_len+2,tag_num]
 
             #instance GRU and the hidden state vector
-            with tf.variable_scope("g_gru", reuse=reuse):
-                GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
-                h = tf.get_variable(name='h', shape=self.hidden_size, dtype=tf.float32, initializer=z) #dims=hidden_size
+            # with tf.variable_scope("g_gru", reuse=reuse):
+            #     GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
+            h = tf.get_variable(name='g_hidden', dtype=tf.float32,
+                                initializer=np.zeros([1, self.hidden_size], dtype=np.float32))  # dims=hidden_size
 
-            for i in range(self.seq_len):
+            for i in range(self.seq_len + 2):
                 if i > 0:
                     tf.get_variable_scope().reuse_variables()
                     output_embeddings = tf.matmul(output_prob[:, i-1, :], g_embeddings, name='output_embeddings') #dims=[bs,embed_size]
-                x_data = tf.multiply(1-mask[:, i], data_embeddings[:, i, :]) #dims=[bs,embed_size]
-                x_gen = tf.multiply(mask[:, i], output_embeddings) #dims=[bs,embed_size]
+                else:
+                    output_embeddings = tf.zeros([self.batch_size, self.embed_size])
+                x_data = tf.multiply(tf.tile(tf.expand_dims(tf.cast(1-mask[:, i], dtype=tf.float32),axis=1),
+                                             [1,self.embed_size]), data_embeddings[:, i, :]) #dims=[bs,embed_size]
+                x_gen = tf.multiply(tf.tile(tf.expand_dims(tf.cast(mask[:, i], dtype=tf.float32),axis=1),
+                                            [1, self.embed_size]), output_embeddings) #dims=[bs,embed_size]
                 x = x_data + x_gen #dims=[bs,embed_size]
-                o_t, h_t = GRU(x, h)
+                h, o_t = gru(x, h)
                 o_drop_t = tf.nn.dropout(o_t, self.dropout_rate, name='o_drop_t')
                 g_logits = linear(o_drop_t, consts.TAG_NUM, scope='g_fc')
                 if i < data_len - 1: #max_len+1
-                    output_prob[:, i+1, :] = tf.nn.softmax(g_logits)
+                    output_prob = tf.concat([output_prob, tf.expand_dims(tf.nn.softmax(g_logits), axis=1)], axis=1)
 
-                out_data = tf.multiply(1-mask[:, i], data_one_hot)
-                out_gen = tf.multiply(mask[:, i], output_prob)
-                out[:, i, :] = out_data + out_gen
+            out_data = tf.multiply(tf.tile(tf.expand_dims(tf.cast(1-mask, dtype=tf.float32),axis=2),
+                                           [1, 1, consts.TAG_NUM]), data_one_hot)
+            out_gen = tf.multiply(tf.tile(tf.expand_dims(tf.cast(mask, dtype=tf.float32),axis=2),
+                                          [1, 1, consts.TAG_NUM]), output_prob)
+            out = out_data + out_gen
 
             return out
 
