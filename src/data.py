@@ -53,7 +53,7 @@ def create_text_mask(len_list,max_len=32,mode='th_extended'):
             window_offset = random.randrange(0,length-window_size+1)
         elif mode == 'full':
             window_size = length
-            window_offset = 1
+            window_offset = 0
         else:
             raise TypeError('supported modes are {th_legacy,th_extended,full}')
         
@@ -78,12 +78,12 @@ def test():
     hist = [0] * (ASCII_LEN + 1)
 
 
-    with open(sanity_text_path,'r') as file:
+    with open(sanity_text_path,'r', encoding="utf8") as file:
         text = file.read()
         sents = text2sents(text)
         print('sanity text len: ' + str(len(text)))
 
-    for sent in sents[:10000]:
+    for sent in sents[:100000]:
         for char in sent:
             hist[char2tag(char)] += 1
 
@@ -96,7 +96,8 @@ def test():
             print(chars[i] + '\t' + str(hist[i]) + '\t' + str(ord(chars[i])))
 
     feed_tags , len_list = text2feed_tags(text[:100000],is_var_len=True,max_len=32)
-    mask_list = create_text_mask(len_list,max_len=32,mode='th_legacy')
+    mask_list = create_text_mask(len_list,max_len=32,mode='full')
+    a = 1
 
 
 
