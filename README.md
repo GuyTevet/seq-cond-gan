@@ -1,3 +1,3 @@
 # seq-cond-gan
-under construction\n
+under construction  
 by Guy Tevet and Gavriel Habib
