@@ -8,6 +8,7 @@ import time
 import tensorflow as tf
 import numpy as np
 import consts
+import data
 
 from ops import *
 from utils import *
@@ -24,18 +25,12 @@ class baseline(object):
         self.epoch = epoch
         self.batch_size = batch_size
 
-        if dataset_name == 'mnist' or dataset_name == 'fashion-mnist':
+        if dataset_name == 'sanity_data':
             # parameters
-            # self.input_height = 28
-            # self.input_width = 28
-            # self.output_height = 28
-            # self.output_width = 28
             self.embed_size = 512
             self.hidden_size = self.embed_size
             self.dropout_rate = 0.5
-
-            self.z_dim = z_dim         # dimension of noise-vector
-            self.c_dim = 1
+            self.z_dim = self.hidden_size
 
             # WGAN_GP parameter
             self.lambd = 0.25       # The higher value, the more stable, but the slower convergence
@@ -46,10 +41,12 @@ class baseline(object):
             self.beta1 = 0.5
 
             # test
-            self.sample_num = 64  # number of generated images to be saved
+            self.sample_num = 64  # number of generated sents to be saved
 
-            # load mnist
+            # load sanity_data
             # self.data_X, self.data_y = load_mnist(self.dataset_name)
+            feed_tags, len_list = text2feed_tags(text[:100000], is_var_len=True, max_len=32)
+            mask_list = create_text_mask(len_list, max_len=32, mode='full')
 
             # get number of batches for a single epoch
             self.num_batches = len(self.data_X) // self.batch_size
@@ -60,12 +57,6 @@ class baseline(object):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
         # Architecture : (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
         with tf.variable_scope("discriminator", reuse=reuse):
-            # net = lrelu(conv2d(x, 64, 4, 4, 2, 2, name='d_conv1'))
-            # net = lrelu(bn(conv2d(net, 128, 4, 4, 2, 2, name='d_conv2'), is_training=is_training, scope='d_bn2'))
-            # net = tf.reshape(net, [self.batch_size, -1])
-            # net = lrelu(bn(linear(net, 1024, scope='d_fc3'), is_training=is_training, scope='d_bn3'))
-            # out_logit = linear(net, 1, scope='d_fc4')
-            # out = tf.nn.sigmoid(out_logit)
             #define embedding matrix
             d_embeddings = tf.get_variable(name='d_embeddings', shape=[consts.TAG_NUM, self.embed_size], dtype=tf.float32,
                                          initializer=tf.contrib.layers.xavier_initilizer()) #dims=[tag_num,embed_size]
@@ -137,23 +128,24 @@ class baseline(object):
 
     def build_model(self):
         # some parameters
-        image_dims = [self.input_height, self.input_width, self.c_dim]
-        bs = self.batch_size
+        # image_dims = [self.input_height, self.input_width, self.c_dim]
+        # bs = self.batch_size
 
         """ Graph Input """
-        # images
-        self.inputs = tf.placeholder(tf.float32, [bs] + image_dims, name='real_images')
+        # generator inputs
+        self.generator_input = tf.placeholder(tf.float32, shape=[None, None], dtype=tf.int32, name='generator_input')
+        self.generator_mask = tf.placeholder(tf.float32, shape=[None, None], dtype=tf.int32, name='generator_mask')
+        self.z = tf.placeholder(tf.float32, shape=[None, self.hidden_size], name='z')
 
-        # noises
-        self.z = tf.placeholder(tf.float32, [bs, self.z_dim], name='z')
+        # discrimnator input
+        self.discrimnator_input = tf.placeholder(tf.float32, shape=[None, None], dtype=tf.int32, name='discrimnator_input')
 
         """ Loss Function """
-
         # output of D for real images
-        D_real, D_real_logits, _ = self.discriminator(self.inputs, is_training=True, reuse=False)
+        D_real, D_real_logits, _ = self.discriminator(self.discrimnator_input, is_training=True, reuse=False)
 
         # output of D for fake images
-        G = self.generator(self.z, is_training=True, reuse=False)
+        G = self.generator(self.z, self.generator_input, self.generator_mask, is_training=True, reuse=False)
         D_fake, D_fake_logits, _ = self.discriminator(G, is_training=True, reuse=True)
 
         # get loss for discriminator
@@ -191,7 +183,7 @@ class baseline(object):
 
         """" Testing """
         # for test
-        self.fake_images = self.generator(self.z, is_training=False, reuse=True)
+        self.fake_sents = self.generator(self.z, is_training=False, reuse=True)
 
         """ Summary """
         d_loss_real_sum = tf.summary.scalar("d_loss_real", d_loss_real)
@@ -209,13 +201,16 @@ class baseline(object):
         tf.global_variables_initializer().run()
 
         # graph inputs for visualize training results
-        self.sample_z = np.random.uniform(-1, 1, size=(self.batch_size , self.z_dim))
+        self.sample_z = np.random.normal(0, 1, size=(self.batch_size, self.hidden_size))
 
         # saver to save model
         self.saver = tf.train.Saver()
 
         # summary writer
         self.writer = tf.summary.FileWriter(self.log_dir + '/' + self.model_name, self.sess.graph)
+
+        # load text
+        self.text = data.load_sanity_data()
 
         # restore check-point if it exits
         could_load, checkpoint_counter = self.load(self.checkpoint_dir)
@@ -230,9 +225,14 @@ class baseline(object):
             counter = 1
             print(" [!] Load failed...")
 
+        max_len_list = [1, 2, 4, 8, 16, 32]
+
         # loop for epoch
         start_time = time.time()
+        assert(self.epoch == len(max_len_list))
         for epoch in range(start_epoch, self.epoch):
+            #arrange data
+            feed_tags, mask_list = data.create_shuffle_text(self.text, max_len=max_len_list[epoch], mode='th_extended')
 
             # get batch data
             for idx in range(start_batch_id, self.num_batches):
@@ -258,7 +258,7 @@ class baseline(object):
 
                 # save training results for every 300 steps
                 if np.mod(counter, 300) == 0:
-                    samples = self.sess.run(self.fake_images,
+                    samples = self.sess.run(self.fake_sents,
                                             feed_dict={self.z: self.sample_z})
                     tot_num_samples = min(self.sample_num, self.batch_size)
                     manifold_h = int(np.floor(np.sqrt(tot_num_samples)))
@@ -282,16 +282,31 @@ class baseline(object):
 
     def visualize_results(self, epoch):
         tot_num_samples = min(self.sample_num, self.batch_size)
-        image_frame_dim = int(np.floor(np.sqrt(tot_num_samples)))
 
         """ random condition, random noise """
 
-        z_sample = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
+        z_sample = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
+        samples = self.sess.run(self.fake_sents, feed_dict={self.z: z_sample})
+        tags = np.argmax(samples, axis=2)
+        sentences = []
 
-        samples = self.sess.run(self.fake_images, feed_dict={self.z: z_sample})
+        for sample_idx in range(tot_num_samples):
+            char_idx = 1
+            sent = ''
+            while tags[sample_idx, char_idx] != consts.END_TAG:
+                sent += data.tag2char(tags[sample_idx, char_idx])
+            sentences.append(sent)
 
-        save_images(samples[:image_frame_dim * image_frame_dim, :, :, :], [image_frame_dim, image_frame_dim],
-                    check_folder(self.result_dir + '/' + self.model_dir) + '/' + self.model_name + '_epoch%03d' % epoch + '_test_all_classes.png')
+        text = '\n'.join(sentences)
+
+        if not os.path.isdir('results'):
+            os.mkdir('results')
+        if not os.path.isdir(os.path.join('results', 'baseline')):
+            os.mkdir(os.path.join('results', 'baseline'))
+
+        save_path = os.path.join('results', 'baseline', 'results_epoch_' + str(epoch) + '.txt')
+        with open(save_path, 'w') as file:
+            file.write(text)
 
     @property
     def model_dir(self):
