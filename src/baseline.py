@@ -57,57 +57,54 @@ class baseline(object):
         # Architecture : (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
         with tf.variable_scope("discriminator", reuse=reuse):
             #define embedding matrix
-            d_embeddings = tf.get_variable(name='d_embeddings', shape=[consts.TAG_NUM, self.embed_size], dtype=tf.float32,
+            d_embeddings = tf.get_variable(name='d_embeddings', shape=[data.TAG_NUM, self.embed_size], dtype=tf.float32,
                                          initializer=tf.contrib.layers.xavier_initializer()) #dims=[tag_num,embed_size]
 
             # instance GRU and the hidden state vector
             # with tf.variable_scope("d_gru", reuse=reuse):
-            #     GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
-            h = tf.get_variable(name='d_hidden', dtype=tf.float32,
-                                initializer=np.zeros([1,self.hidden_size], dtype=np.float32)) #dims=hidden_size
+            h = tf.constant(np.zeros([1, self.hidden_size], dtype=np.float32), name='d_hidden',dtype=tf.float32)  # dims=hidden_size
 
             # get embeddings of the input data
-            input_embeddings = tf.reshape(tf.matmul(tf.reshape(x, [-1, consts.TAG_NUM]), d_embeddings, name='input_embeddings'),
+            input_embeddings = tf.reshape(tf.matmul(tf.reshape(x, [-1, data.TAG_NUM]), d_embeddings, name='input_embeddings'),
                                                     [self.batch_size, self.seq_len+2, self.embed_size])  #dims=[bs,max_len+2,embed_size]
             with tf.variable_scope("gru", reuse=reuse):
                 for i in range(self.seq_len + 2):
                     if i > 0:
                         tf.get_variable_scope().reuse_variables()
-                    h, o_t = gru(h,input_embeddings[:,i,:])
+                    h, o_t = gru(h,input_embeddings[:,i,:],scope='d_gru')
             final_state_drop = tf.nn.dropout(o_t, self.dropout_rate, name='final_state_drop')
             out_logit = linear(final_state_drop, 1, scope='d_fc')
             out = tf.nn.sigmoid(out_logit)
 
             return out, out_logit, final_state_drop
 
-    def generator(self, z, data, mask, is_training=True, reuse=False):
+    def generator(self, z, data_input, mask, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
         # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
         with tf.variable_scope("generator", reuse=reuse):
 
-            data_len = data.shape[1] #max_len+2
+            data_len = data_input.shape[1] #max_len+2
 
             #define embedding matrix
-            g_embeddings = tf.get_variable(name='g_embeddings', shape=[consts.TAG_NUM, self.embed_size], dtype=tf.float32,
+            g_embeddings = tf.get_variable(name='g_embeddings', shape=[data.TAG_NUM, self.embed_size], dtype=tf.float32,
                                          initializer=tf.contrib.layers.xavier_initializer()) #dims=[tag_num,embed_size]
 
             #get embeddings of the real data
-            data_embeddings = tf.nn.embedding_lookup(g_embeddings, data, name='data_embeddings') #dims=[bs,max_len+2,embed_size]
+            data_embeddings = tf.nn.embedding_lookup(g_embeddings, data_input, name='data_embeddings') #dims=[bs,max_len+2,embed_size]
 
             #get one hot vectors of the real data
-            data_one_hot = tf.one_hot(data, consts.TAG_NUM, axis=2, dtype=tf.float32, name='data_one_hot') #dims=[bs,max_len+2,tag_num]
+            data_one_hot = tf.one_hot(data_input, data.TAG_NUM, axis=2, dtype=tf.float32, name='data_one_hot') #dims=[bs,max_len+2,tag_num]
 
             #init placeholders to output probabilities of the network and the final output
-            output_prob = tf.constant(value=np.zeros([self.batch_size, 1, consts.TAG_NUM]), dtype=tf.float32,
-                                      name='output_prob') #dims=[bs,max_len+2,tag_num]
-            out = tf.constant(value=np.zeros([self.batch_size, data_len, consts.TAG_NUM]), dtype=tf.float32,
+            output_prob = tf.constant(value=np.zeros([self.batch_size, 1, data.TAG_NUM]), dtype=tf.float32,
+                                      name='output_prob') #dims=[bs,1,tag_num]
+            out = tf.constant(value=np.zeros([self.batch_size, data_len, data.TAG_NUM]), dtype=tf.float32,
                               name='out')  # dims=[bs,max_len+2,tag_num]
 
             #instance GRU and the hidden state vector
             # with tf.variable_scope("g_gru", reuse=reuse):
             #     GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
-            h = tf.get_variable(name='g_hidden', dtype=tf.float32,
-                                initializer=np.zeros([1, self.hidden_size], dtype=np.float32))  # dims=hidden_size
+            h = tf.constant(np.zeros([1, self.hidden_size], dtype=np.float32),name='g_hidden', dtype=tf.float32)  # dims=hidden_size
 
             for i in range(self.seq_len + 2):
                 if i > 0:
@@ -120,16 +117,18 @@ class baseline(object):
                 x_gen = tf.multiply(tf.tile(tf.expand_dims(tf.cast(mask[:, i], dtype=tf.float32),axis=1),
                                             [1, self.embed_size]), output_embeddings) #dims=[bs,embed_size]
                 x = x_data + x_gen #dims=[bs,embed_size]
-                h, o_t = gru(x, h)
-                o_drop_t = tf.nn.dropout(o_t, self.dropout_rate, name='o_drop_t')
-                g_logits = linear(o_drop_t, consts.TAG_NUM, scope='g_fc')
+                h, o_t = gru(x, h, scope='g_gru')
+                o_drop_t = tf.nn.dropout(o_t, self.dropout_rate, name='o_drop_t') # dims=[bs,hidden_size]
+                g_logits = linear(o_drop_t, data.TAG_NUM, scope='g_fc') # dims=[bs,tag_num]
+                g_probs = tf.nn.softmax(g_logits,axis=1) # dims=[bs,tag_num]
+
                 if i < data_len - 1: #max_len+1
-                    output_prob = tf.concat([output_prob, tf.expand_dims(tf.nn.softmax(g_logits), axis=1)], axis=1)
+                    output_prob = tf.concat([output_prob, tf.expand_dims(g_probs, axis=1)], axis=1)
 
             out_data = tf.multiply(tf.tile(tf.expand_dims(tf.cast(1-mask, dtype=tf.float32),axis=2),
-                                           [1, 1, consts.TAG_NUM]), data_one_hot)
+                                           [1, 1, data.TAG_NUM]), data_one_hot)
             out_gen = tf.multiply(tf.tile(tf.expand_dims(tf.cast(mask, dtype=tf.float32),axis=2),
-                                          [1, 1, consts.TAG_NUM]), output_prob)
+                                          [1, 1, data.TAG_NUM]), output_prob)
             out = out_data + out_gen
 
             return out
@@ -147,7 +146,7 @@ class baseline(object):
 
         # discrimnator input
         self.discrimnator_input = tf.placeholder(shape=[self.batch_size, self.seq_len+2], dtype=tf.int32, name='discrimnator_input')
-        self.discrimnator_input_one_hot = tf.one_hot(self.discrimnator_input, dtype=tf.float32, depth=consts.TAG_NUM)
+        self.discrimnator_input_one_hot = tf.one_hot(self.discrimnator_input, dtype=tf.float32, depth=data.TAG_NUM)
 
         """ Loss Function """
         # output of D for real images
@@ -168,9 +167,9 @@ class baseline(object):
 
         """ Gradient Penalty """
         # This is borrowed from https://github.com/kodalinaveen3/DRAGAN/blob/master/DRAGAN.ipynb
-        alpha = tf.random_uniform(shape=self.inputs.get_shape(), minval=0.,maxval=1.)
-        differences = G - self.inputs # This is different from MAGAN
-        interpolates = self.inputs + (alpha * differences)
+        alpha = tf.random_uniform(shape=self.discrimnator_input_one_hot.get_shape(), minval=0.,maxval=1.)
+        differences = G - self.discrimnator_input_one_hot # This is different from MAGAN
+        interpolates = self.discrimnator_input_one_hot + (alpha * differences)
         _,D_inter,_=self.discriminator(interpolates, is_training=True, reuse=True)
         gradients = tf.gradients(D_inter, [interpolates])[0]
         slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1]))
@@ -192,17 +191,24 @@ class baseline(object):
 
         """" Testing """
         # for test
-        self.fake_sents = self.generator(self.z, is_training=False, reuse=True)
+        batch_empty_mask, batch_empty_data = data.create_empty_data(sent_num=self.batch_size,seq_len=self.seq_len,max_len=16) #FIXME - max_len
+        self.fake_sents = self.generator(self.z, data_input = tf.constant(batch_empty_data), mask=tf.constant(batch_empty_mask),is_training=False, reuse=True)
 
         """ Summary """
         d_loss_real_sum = tf.summary.scalar("d_loss_real", d_loss_real)
         d_loss_fake_sum = tf.summary.scalar("d_loss_fake", d_loss_fake)
         d_loss_sum = tf.summary.scalar("d_loss", self.d_loss)
         g_loss_sum = tf.summary.scalar("g_loss", self.g_loss)
+        g_vars_sum = [tf.summary.histogram(var.name, var) for var in g_vars]
+        d_vars_sum = [tf.summary.histogram(var.name, var) for var in d_vars]
+        g_output_sum = tf.summary.histogram('G_output',G)
+        d_output_fake_sum = tf.summary.histogram('D_fake', D_fake)
+        d_output_real_sum = tf.summary.histogram('D_real', D_real)
 
         # final summary operations
-        self.g_sum = tf.summary.merge([d_loss_fake_sum, g_loss_sum])
-        self.d_sum = tf.summary.merge([d_loss_real_sum, d_loss_sum])
+        self.g_sum = tf.summary.merge([d_loss_fake_sum, g_loss_sum , g_output_sum] + g_vars_sum)
+        self.d_sum = tf.summary.merge([d_loss_real_sum, d_loss_sum, d_output_fake_sum, d_output_real_sum] + d_vars_sum)
+
 
     def train(self):
 
@@ -222,8 +228,8 @@ class baseline(object):
         self.text = data.load_sanity_data()
 
         # temp FIXME
-        feed_tags, mask_list = data.create_shuffle_text(self.text, max_len=1, mode='th_extended')
-        self.num_batches = len(feed_tags) // self.batch_size
+        feed_tags, mask_list = data.create_shuffle_data(self.text, max_len=1, seq_len=self.seq_len, mode='th_extended')
+        self.num_batches = len(feed_tags) // (self.batch_size * 2)
 
         # restore check-point if it exits
         could_load, checkpoint_counter = self.load(self.checkpoint_dir)
@@ -245,31 +251,34 @@ class baseline(object):
         assert(self.epoch == len(max_len_list))
         for epoch in range(start_epoch, self.epoch):
             #arrange data
-            feed_tags, mask_list = data.create_shuffle_text(self.text, max_len=max_len_list[epoch], seq_len=self.seq_len,
+            feed_tags, mask_list = data.create_shuffle_data(self.text, max_len=max_len_list[epoch], seq_len=self.seq_len,
                                                             mode='th_extended')
 
             # get batch data
             for idx in range(start_batch_id, self.num_batches):
-                batch_sents = feed_tags[idx*self.batch_size:(idx+1)*self.batch_size]
-                batch_sents_generator = batch_sents[:(self.batch_size/2)]
-                batch_sents_discriminator = batch_sents[(self.batch_size/2):]
+                batch_sents = feed_tags[idx*(self.batch_size*2):(idx+1)*(self.batch_size*2)]
+                batch_sents_generator = batch_sents[:self.batch_size]
+                batch_sents_discriminator = batch_sents[self.batch_size:]
 
                 batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
-                batch_mask = mask_list[idx*self.batch_size:(idx+1)*self.batch_size]
-                batch_mask_generator = batch_mask[:(self.batch_size/2)]
+                batch_mask = mask_list[idx*(self.batch_size*2):(idx+1)*(self.batch_size*2)]
+                batch_mask_generator = batch_mask[:self.batch_size]
 
                 # update D network
                 _, summary_str, d_loss = self.sess.run([self.d_optim, self.d_sum, self.d_loss],
                                                feed_dict={self.discrimnator_input: batch_sents_discriminator,
                                                           self.generator_input: batch_sents_generator,
-                                                          self.generator_mask: batch_mask_generator, self.z: batch_z})
+                                                          self.generator_mask: batch_mask_generator,
+                                                          self.z: batch_z})
                 self.writer.add_summary(summary_str, counter)
 
                 # update G network
                 if (counter-1) % self.disc_iters == 0:
                     batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
                     _, summary_str, g_loss = self.sess.run([self.g_optim, self.g_sum, self.g_loss],
-                                                           feed_dict={self.z: batch_z, self.generator_input: batch_sents_generator})
+                                                           feed_dict={self.z: batch_z,
+                                                                      self.generator_mask: batch_mask_generator,
+                                                                      self.generator_input: batch_sents_generator})
                     self.writer.add_summary(summary_str, counter)
 
                 counter += 1
@@ -278,16 +287,16 @@ class baseline(object):
                 print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
                       % (epoch, idx, self.num_batches, time.time() - start_time, d_loss, g_loss))
 
-                # save training results for every 300 steps
-                if np.mod(counter, 300) == 0:
-                    samples = self.sess.run(self.fake_sents,
-                                            feed_dict={self.z: self.sample_z})
-                    tot_num_samples = min(self.sample_num, self.batch_size)
-                    manifold_h = int(np.floor(np.sqrt(tot_num_samples)))
-                    manifold_w = int(np.floor(np.sqrt(tot_num_samples)))
-                    save_images(samples[:manifold_h * manifold_w, :, :, :], [manifold_h, manifold_w],
-                                './' + check_folder(self.result_dir + '/' + self.model_dir) + '/' + self.model_name + '_train_{:02d}_{:04d}.png'.format(
-                                    epoch, idx))
+                # # save training results for every 300 steps
+                # if np.mod(counter, 300) == 0:
+                #     samples = self.sess.run(self.fake_sents,
+                #                             feed_dict={self.z: self.sample_z})
+                #     tot_num_samples = min(self.sample_num, self.batch_size)
+                #     manifold_h = int(np.floor(np.sqrt(tot_num_samples)))
+                #     manifold_w = int(np.floor(np.sqrt(tot_num_samples)))
+                #     save_images(samples[:manifold_h * manifold_w, :, :, :], [manifold_h, manifold_w],
+                #                 './' + check_folder(self.result_dir + '/' + self.model_dir) + '/' + self.model_name + '_train_{:02d}_{:04d}.png'.format(
+                #                     epoch, idx))
 
             # After an epoch, start_batch_id is set to zero
             # non-zero value is only for the first epoch after loading pre-trained model
@@ -309,14 +318,15 @@ class baseline(object):
 
         z_sample = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
         samples = self.sess.run(self.fake_sents, feed_dict={self.z: z_sample})
-        tags = np.argmax(samples, axis=2)
+        tags = np.argmax(samples, axis=2).astype(int)
         sentences = []
 
         for sample_idx in range(tot_num_samples):
             char_idx = 1
             sent = ''
-            while tags[sample_idx, char_idx] != consts.END_TAG:
-                sent += data.tag2char(tags[sample_idx, char_idx])
+            while tags[sample_idx, char_idx].astype(int) != data.END_TAG:
+                sent += data.tag2char(int(tags[sample_idx, char_idx].astype(int)))
+                char_idx += 1
             sentences.append(sent)
 
         text = '\n'.join(sentences)
