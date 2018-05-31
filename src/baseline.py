@@ -52,7 +52,7 @@ class baseline(object):
         else:
             raise NotImplementedError
 
-    def discriminator(self, x, is_training=True, reuse=False):
+    def discriminator(self, x, max_len, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
         # Architecture : (64)4c2s-(128)4c2s_BL-FC1024_BL-FC1_S
         with tf.variable_scope("discriminator", reuse=reuse):
@@ -63,22 +63,26 @@ class baseline(object):
             # instance GRU and the hidden state vector
             # with tf.variable_scope("d_gru", reuse=reuse):
             h = tf.constant(np.zeros([1, self.hidden_size], dtype=np.float32), name='d_hidden',dtype=tf.float32)  # dims=hidden_size
-
+            o_t = tf.constant(np.zeros([1, self.hidden_size], dtype=np.float32), name='d_o_t',dtype=tf.float32)  # dims=hidden_size
             # get embeddings of the input data
             input_embeddings = tf.reshape(tf.matmul(tf.reshape(x, [-1, data.TAG_NUM]), d_embeddings, name='input_embeddings'),
                                                     [self.batch_size, self.seq_len+2, self.embed_size])  #dims=[bs,max_len+2,embed_size]
+
             with tf.variable_scope("gru", reuse=reuse):
                 for i in range(self.seq_len + 2):
                     if i > 0:
                         tf.get_variable_scope().reuse_variables()
-                    h, o_t = gru(h,input_embeddings[:,i,:],scope='d_gru')
+                    h, o_t = tf.cond(pred=tf.less(tf.constant(i),max_len+2),
+                                     true_fn= lambda: gru(h,input_embeddings[:,i,:],scope='d_gru') ,
+                                     false_fn= lambda: (h, o_t) )
+                    # h, o_t = gru(h,input_embeddings[:,i,:],scope='d_gru')
             final_state_drop = tf.nn.dropout(o_t, self.dropout_rate, name='final_state_drop')
             out_logit = linear(final_state_drop, 1, scope='d_fc')
             out = tf.nn.sigmoid(out_logit)
 
             return out, out_logit, final_state_drop
 
-    def generator(self, z, data_input, mask, is_training=True, reuse=False):
+    def generator(self, z, data_input, mask, max_len, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
         # Architecture : FC1024_BR-FC7x7x128_BR-(64)4dc2s_BR-(1)4dc2s_S
         with tf.variable_scope("generator", reuse=reuse):
@@ -101,6 +105,9 @@ class baseline(object):
             out = tf.constant(value=np.zeros([self.batch_size, data_len, data.TAG_NUM]), dtype=tf.float32,
                               name='out')  # dims=[bs,max_len+2,tag_num]
 
+            g_probs = tf.constant(value=np.zeros([self.batch_size, data.TAG_NUM]), dtype=tf.float32,
+                                      name='g_probs') #dims=[bs,1,tag_num]
+
             #instance GRU and the hidden state vector
             # with tf.variable_scope("g_gru", reuse=reuse):
             #     GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
@@ -117,10 +124,15 @@ class baseline(object):
                 x_gen = tf.multiply(tf.tile(tf.expand_dims(tf.cast(mask[:, i], dtype=tf.float32),axis=1),
                                             [1, self.embed_size]), output_embeddings) #dims=[bs,embed_size]
                 x = x_data + x_gen #dims=[bs,embed_size]
-                h, o_t = gru(x, h, scope='g_gru')
-                o_drop_t = tf.nn.dropout(o_t, self.dropout_rate, name='o_drop_t') # dims=[bs,hidden_size]
-                g_logits = linear(o_drop_t, data.TAG_NUM, scope='g_fc') # dims=[bs,tag_num]
-                g_probs = tf.nn.softmax(g_logits,axis=1) # dims=[bs,tag_num]
+
+                g_probs = tf.cond(pred=tf.less(tf.constant(i), max_len + 2),
+                                 true_fn=lambda: tf.nn.softmax(linear(tf.nn.dropout((gru(x, h, scope='g_gru'))[1], self.dropout_rate, name='o_drop_t'), data.TAG_NUM, scope='g_fc'),axis=1),
+                                 false_fn=lambda: g_probs)
+
+                # h, o_t = gru(x, h, scope='g_gru')
+                # o_drop_t = tf.nn.dropout(o_t, self.dropout_rate, name='o_drop_t') # dims=[bs,hidden_size]
+                # g_logits = linear(o_drop_t, data.TAG_NUM, scope='g_fc') # dims=[bs,tag_num]
+                # g_probs = tf.nn.softmax(g_logits,axis=1) # dims=[bs,tag_num]
 
                 if i < data_len - 1: #max_len+1
                     output_prob = tf.concat([output_prob, tf.expand_dims(g_probs, axis=1)], axis=1)
@@ -145,6 +157,7 @@ class baseline(object):
         self.generator_input = tf.placeholder(shape=[self.batch_size, self.seq_len+2], dtype=tf.int32, name='generator_input')
         self.generator_mask = tf.placeholder(shape=[self.batch_size, self.seq_len+2], dtype=tf.int32, name='generator_mask')
         self.z = tf.placeholder(tf.float32, shape=[self.batch_size, self.hidden_size], name='z')
+        self.max_len = tf.placeholder(tf.int32, name='max_len')
 
         # discrimnator input
         self.discrimnator_input = tf.placeholder(shape=[self.batch_size, self.seq_len+2], dtype=tf.int32, name='discrimnator_input')
@@ -152,11 +165,11 @@ class baseline(object):
 
         """ Loss Function """
         # output of D for real images
-        D_real, D_real_logits, _ = self.discriminator(self.discrimnator_input_one_hot, is_training=True, reuse=False)
+        D_real, D_real_logits, _ = self.discriminator(self.discrimnator_input_one_hot,self.max_len, is_training=True, reuse=False)
 
         # output of D for fake images
-        G, self.g_debug_dict = self.generator(self.z, self.generator_input, self.generator_mask, is_training=True, reuse=False)
-        D_fake, D_fake_logits, _ = self.discriminator(G, is_training=True, reuse=True)
+        G, self.g_debug_dict = self.generator(self.z, self.generator_input, self.generator_mask, self.max_len, is_training=True, reuse=False)
+        D_fake, D_fake_logits, _ = self.discriminator(G, self.max_len, is_training=True, reuse=True)
 
         # get loss for discriminator
         d_loss_real = - tf.reduce_mean(D_real_logits)
@@ -172,7 +185,7 @@ class baseline(object):
         alpha = tf.random_uniform(shape=self.discrimnator_input_one_hot.get_shape(), minval=0.,maxval=1.)
         differences = G - self.discrimnator_input_one_hot # This is different from MAGAN
         interpolates = self.discrimnator_input_one_hot + (alpha * differences)
-        _,D_inter,_=self.discriminator(interpolates, is_training=True, reuse=True)
+        _,D_inter,_=self.discriminator(interpolates, self.max_len, is_training=True, reuse=True)
         gradients = tf.gradients(D_inter, [interpolates])[0]
         slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1]))
         gradient_penalty = tf.reduce_mean((slopes - 1.) ** 2)
@@ -193,8 +206,7 @@ class baseline(object):
 
         """" Testing """
         # for test
-        batch_empty_mask, batch_empty_data = data.create_empty_data(sent_num=self.batch_size,seq_len=self.seq_len,max_len=16) #FIXME - max_len
-        self.fake_sents, _ = self.generator(self.z, data_input = tf.constant(batch_empty_data), mask=tf.constant(batch_empty_mask),is_training=False, reuse=True)
+        self.fake_sents, _ = self.generator(self.z, self.generator_input, self.generator_mask, max_len=self.max_len, is_training=False, reuse=True)
 
         """ Summary """
         d_loss_real_sum = tf.summary.scalar("d_loss_real", d_loss_real)
@@ -228,10 +240,7 @@ class baseline(object):
 
         # load text
         self.text = data.load_sanity_data()
-
-        # temp FIXME
-        mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=1, seq_len=self.seq_len, mode='th_extended')
-        self.num_batches = len(feed_tags) // (self.batch_size * 2)
+        self.num_batches = len(self.text) // (self.batch_size * 2)
 
         # restore check-point if it exits
         could_load, checkpoint_counter = self.load(self.checkpoint_dir)
@@ -246,15 +255,16 @@ class baseline(object):
             counter = 1
             print(" [!] Load failed...")
 
-        max_len_list = [1, 2, 4, 8, 16, 32]
+        max_len_list = [1, 1 ,2 ,2, 4, 4, 8, 8, 16, 16, 32, 32]
 
         # loop for epoch
         start_time = time.time()
         assert(self.epoch == len(max_len_list))
         for epoch in range(start_epoch, self.epoch):
-            # self.visualize_results(epoch)
+            # self.visualize_results(epoch, max_len=32)  # for debug - max len remains constant and maximal
             #arrange data
-            mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=max_len_list[epoch], seq_len=self.seq_len,
+            cur_max_len = max_len_list[epoch]
+            mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=cur_max_len, seq_len=self.seq_len,
                                                             mode='th_extended')
 
             # get batch data
@@ -272,7 +282,8 @@ class baseline(object):
                                                feed_dict={self.discrimnator_input: batch_sents_discriminator,
                                                           self.generator_input: batch_sents_generator,
                                                           self.generator_mask: batch_mask_generator,
-                                                          self.z: batch_z})
+                                                          self.z: batch_z,
+                                                          self.max_len: cur_max_len})
                 self.writer.add_summary(summary_str, counter)
 
                 # update G network
@@ -281,21 +292,23 @@ class baseline(object):
                     _, summary_str, g_loss = self.sess.run([self.g_optim, self.g_sum, self.g_loss],
                                                            feed_dict={self.z: batch_z,
                                                                       self.generator_mask: batch_mask_generator,
-                                                                      self.generator_input: batch_sents_generator})
+                                                                      self.generator_input: batch_sents_generator,
+                                                                      self.max_len: cur_max_len})
                     self.writer.add_summary(summary_str, counter)
 
-                #for debug
-                if idx % 10 == 0:
-                    batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
-                    out_data, out_gen, out, output_prob = self.sess.run([
-                                                            self.g_debug_dict['out_data'],
-                                                            self.g_debug_dict['out_gen'],
-                                                            self.g_debug_dict['out'],
-                                                            self.g_debug_dict['output_prob']],
-                                                           feed_dict={self.z: batch_z,
-                                                                      self.generator_mask: batch_mask_generator,
-                                                                      self.generator_input: batch_sents_generator})
-                    print('debug')
+                # #for debug
+                # if idx % 10 == 0:
+                #     batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
+                #     out_data, out_gen, out, output_prob = self.sess.run([
+                #                                             self.g_debug_dict['out_data'],
+                #                                             self.g_debug_dict['out_gen'],
+                #                                             self.g_debug_dict['out'],
+                #                                             self.g_debug_dict['output_prob']],
+                #                                            feed_dict={self.z: batch_z,
+                #                                                       self.generator_mask: batch_mask_generator,
+                #                                                       self.generator_input: batch_sents_generator,
+                #                                                       self.max_len: cur_max_len})
+                #     print('debug')
 
                 counter += 1
 
@@ -323,18 +336,23 @@ class baseline(object):
             self.save(self.checkpoint_dir, counter)
 
             # show temporal results
-            self.visualize_results(epoch)
+            self.visualize_results(epoch,max_len=32) # for debug - max len remains constant and maximal
 
         # save model for final step
         self.save(self.checkpoint_dir, counter)
 
-    def visualize_results(self, epoch):
+    def visualize_results(self, epoch, max_len):
         tot_num_samples = min(self.sample_num, self.batch_size)
 
         """ random condition, random noise """
 
         z_sample = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
-        samples = self.sess.run(self.fake_sents, feed_dict={self.z: z_sample})
+        batch_empty_mask, batch_empty_data = data.create_empty_data(sent_num=self.batch_size,seq_len=self.seq_len,max_len=max_len)
+
+        samples = self.sess.run(self.fake_sents, feed_dict={self.z: z_sample,
+                                                            self.generator_mask: batch_empty_mask,
+                                                            self.generator_input: batch_empty_data,
+                                                            self.max_len: max_len})
         tags = np.argmax(samples, axis=2).astype(int)
         sentences = []
 
