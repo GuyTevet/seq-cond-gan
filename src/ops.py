@@ -87,6 +87,8 @@ def gru(previous_hidden_state, x, scope=None):
 
     with tf.variable_scope(scope or "GRU"):
 
+        #TODO - can be accelerated (?)
+
         input_shape = x.get_shape().as_list()
         hidden_layer_shape = previous_hidden_state.get_shape().as_list()
 

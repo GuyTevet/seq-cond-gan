@@ -62,7 +62,7 @@ class baseline(object):
 
             # instance GRU and the hidden state vector
             # with tf.variable_scope("d_gru", reuse=reuse):
-            h = tf.constant(np.zeros([1, self.hidden_size], dtype=np.float32), name='d_hidden',dtype=tf.float32)  # dims=hidden_size
+            h = tf.constant(np.zeros([self.batch_size, self.hidden_size], dtype=np.float32), name='d_hidden',dtype=tf.float32)  # dims=hidden_size
             o_t = tf.constant(np.zeros([1, self.hidden_size], dtype=np.float32), name='d_o_t',dtype=tf.float32)  # dims=hidden_size
             # get embeddings of the input data
             input_embeddings = tf.reshape(tf.matmul(tf.reshape(x, [-1, data.TAG_NUM]), d_embeddings, name='input_embeddings'),
@@ -77,11 +77,10 @@ class baseline(object):
                                      false_fn= lambda: (h, o_t) )
                     # h, o_t = gru(h,input_embeddings[:,i,:],scope='d_gru')
             final_state_drop = tf.nn.dropout(o_t, self.dropout_rate, name='final_state_drop')
-            out_for_classifier = final_state_drop
             out_logit = linear(final_state_drop, 1, scope='d_fc')
             out = tf.nn.sigmoid(out_logit)
 
-            return out, out_logit, out_for_classifier
+            return out, out_logit, final_state_drop
 
     def generator(self, z, data_input, mask, max_len, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
@@ -103,16 +102,13 @@ class baseline(object):
             #init placeholders to output probabilities of the network and the final output
             output_prob = tf.constant(value=np.zeros([self.batch_size, 1, data.TAG_NUM]), dtype=tf.float32,
                                       name='output_prob') #dims=[bs,1,tag_num]
-            out = tf.constant(value=np.zeros([self.batch_size, data_len, data.TAG_NUM]), dtype=tf.float32,
-                              name='out')  # dims=[bs,max_len+2,tag_num]
-
             g_probs = tf.constant(value=np.zeros([self.batch_size, data.TAG_NUM]), dtype=tf.float32,
                                       name='g_probs') #dims=[bs,1,tag_num]
 
             #instance GRU and the hidden state vector
             # with tf.variable_scope("g_gru", reuse=reuse):
             #     GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
-            h = tf.constant(z, name='g_hidden', dtype=tf.float32)  # dims=hidden_size; initialized with noise
+            h = tf.identity(z,name='g_hidden')  # dims=hidden_size; initialized with noise
 
             for i in range(self.seq_len + 2):
                 if i > 0:
