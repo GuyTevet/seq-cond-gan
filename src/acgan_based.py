@@ -77,10 +77,11 @@ class baseline(object):
                                      false_fn= lambda: (h, o_t) )
                     # h, o_t = gru(h,input_embeddings[:,i,:],scope='d_gru')
             final_state_drop = tf.nn.dropout(o_t, self.dropout_rate, name='final_state_drop')
+            out_for_classifier = final_state_drop
             out_logit = linear(final_state_drop, 1, scope='d_fc')
             out = tf.nn.sigmoid(out_logit)
 
-            return out, out_logit, final_state_drop
+            return out, out_logit, out_for_classifier
 
     def generator(self, z, data_input, mask, max_len, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
