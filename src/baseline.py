@@ -131,7 +131,9 @@ class baseline(object):
                                           [1, 1, data.TAG_NUM]), output_prob)
             out = out_data + out_gen
 
-            return out
+            debug_dict = {'out_data': out_data, 'out_gen': out_gen, 'out': out, 'output_prob': output_prob}
+
+            return out, debug_dict
 
     def build_model(self):
         # some parameters
@@ -153,7 +155,7 @@ class baseline(object):
         D_real, D_real_logits, _ = self.discriminator(self.discrimnator_input_one_hot, is_training=True, reuse=False)
 
         # output of D for fake images
-        G = self.generator(self.z, self.generator_input, self.generator_mask, is_training=True, reuse=False)
+        G, self.g_debug_dict = self.generator(self.z, self.generator_input, self.generator_mask, is_training=True, reuse=False)
         D_fake, D_fake_logits, _ = self.discriminator(G, is_training=True, reuse=True)
 
         # get loss for discriminator
@@ -192,7 +194,7 @@ class baseline(object):
         """" Testing """
         # for test
         batch_empty_mask, batch_empty_data = data.create_empty_data(sent_num=self.batch_size,seq_len=self.seq_len,max_len=16) #FIXME - max_len
-        self.fake_sents = self.generator(self.z, data_input = tf.constant(batch_empty_data), mask=tf.constant(batch_empty_mask),is_training=False, reuse=True)
+        self.fake_sents, _ = self.generator(self.z, data_input = tf.constant(batch_empty_data), mask=tf.constant(batch_empty_mask),is_training=False, reuse=True)
 
         """ Summary """
         d_loss_real_sum = tf.summary.scalar("d_loss_real", d_loss_real)
@@ -228,7 +230,7 @@ class baseline(object):
         self.text = data.load_sanity_data()
 
         # temp FIXME
-        feed_tags, mask_list = data.create_shuffle_data(self.text, max_len=1, seq_len=self.seq_len, mode='th_extended')
+        mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=1, seq_len=self.seq_len, mode='th_extended')
         self.num_batches = len(feed_tags) // (self.batch_size * 2)
 
         # restore check-point if it exits
@@ -250,8 +252,9 @@ class baseline(object):
         start_time = time.time()
         assert(self.epoch == len(max_len_list))
         for epoch in range(start_epoch, self.epoch):
+            # self.visualize_results(epoch)
             #arrange data
-            feed_tags, mask_list = data.create_shuffle_data(self.text, max_len=max_len_list[epoch], seq_len=self.seq_len,
+            mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=max_len_list[epoch], seq_len=self.seq_len,
                                                             mode='th_extended')
 
             # get batch data
@@ -281,7 +284,21 @@ class baseline(object):
                                                                       self.generator_input: batch_sents_generator})
                     self.writer.add_summary(summary_str, counter)
 
+                #for debug
+                if idx % 10 == 0:
+                    batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
+                    out_data, out_gen, out, output_prob = self.sess.run([
+                                                            self.g_debug_dict['out_data'],
+                                                            self.g_debug_dict['out_gen'],
+                                                            self.g_debug_dict['out'],
+                                                            self.g_debug_dict['output_prob']],
+                                                           feed_dict={self.z: batch_z,
+                                                                      self.generator_mask: batch_mask_generator,
+                                                                      self.generator_input: batch_sents_generator})
+                    print('debug')
+
                 counter += 1
+
 
                 # display training status
                 print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
