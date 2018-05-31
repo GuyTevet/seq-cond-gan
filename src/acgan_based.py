@@ -112,7 +112,7 @@ class baseline(object):
             #instance GRU and the hidden state vector
             # with tf.variable_scope("g_gru", reuse=reuse):
             #     GRU = tf.contrib.rnn.GRUCell(self.hidden_size)
-            h = tf.constant(z, name='g_hidden', dtype=tf.float32)  # dims=hidden_size; initialized with noise
+            h = tf.constant(z, name='g_hidden', dtype=tf.float32)  # dims=hidden_size
 
             for i in range(self.seq_len + 2):
                 if i > 0:
