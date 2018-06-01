@@ -12,6 +12,7 @@ import os
 # from LSGAN import LSGAN
 # from BEGAN import BEGAN
 from baseline import baseline
+from acgan_based import acgan_based
 
 ## VAE Variants
 # from VAE import VAE
@@ -29,7 +30,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description=desc)
 
     parser.add_argument('--gan_type', type=str, default='GAN',
-                        choices=['baseline'], help='The type of GAN', required=True)
+                        choices=['baseline', 'acgan_based'], help='The type of GAN', required=True)
     parser.add_argument('--dataset', type=str, default='sanity_data', choices=['mnist', 'fashion-mnist', 'celebA', 'sanity_data'],
                         help='The name of dataset')
     parser.add_argument('--epoch', type=int, default=2, help='The number of epochs to run')
@@ -76,7 +77,7 @@ def main():
     # open session
     # models = [GAN, CGAN, infoGAN, ACGAN, EBGAN, WGAN, WGAN_GP, DRAGAN,
     #           LSGAN, BEGAN, VAE, CVAE]
-    models = [baseline]
+    models = [baseline, acgan_based]
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True)) as sess:
         # declare instance for GAN
 
