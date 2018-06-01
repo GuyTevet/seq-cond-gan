@@ -24,12 +24,13 @@ class baseline(object):
         self.log_dir = log_dir
         self.epoch = epoch
         self.batch_size = batch_size
+        self.debug_mode = False
 
         if dataset_name == 'sanity_data':
             # parameters
             self.embed_size = 512
             self.hidden_size = self.embed_size
-            self.dropout_rate = 0.5
+            self.dropout_rate_for_train = 0.5
             self.z_dim = self.hidden_size
             self.seq_len = 32
 
@@ -76,7 +77,7 @@ class baseline(object):
                                      true_fn= lambda: gru(h,input_embeddings[:,i,:],scope='d_gru') ,
                                      false_fn= lambda: (h, o_t) )
                     # h, o_t = gru(h,input_embeddings[:,i,:],scope='d_gru')
-            final_state_drop = tf.nn.dropout(o_t, self.dropout_rate, name='final_state_drop')
+            final_state_drop = tf.nn.dropout(o_t, self.dropout_ph, name='final_state_drop')
             out_logit = linear(final_state_drop, 1, scope='d_fc')
             out = tf.nn.sigmoid(out_logit)
 
@@ -123,11 +124,11 @@ class baseline(object):
                 x = x_data + x_gen #dims=[bs,embed_size]
 
                 g_probs = tf.cond(pred=tf.less(tf.constant(i), max_len + 2),
-                                 true_fn=lambda: tf.nn.softmax(linear(tf.nn.dropout((gru(x, h, scope='g_gru'))[1], self.dropout_rate, name='o_drop_t'), data.TAG_NUM, scope='g_fc'),axis=1),
+                                 true_fn=lambda: tf.nn.softmax(linear(tf.nn.dropout((gru(x, h, scope='g_gru'))[1], self.dropout_ph, name='o_drop_t'), data.TAG_NUM, scope='g_fc'),axis=1),
                                  false_fn=lambda: g_probs)
 
                 # h, o_t = gru(x, h, scope='g_gru')
-                # o_drop_t = tf.nn.dropout(o_t, self.dropout_rate, name='o_drop_t') # dims=[bs,hidden_size]
+                # o_drop_t = tf.nn.dropout(o_t, self.dropout_ph, name='o_drop_t') # dims=[bs,hidden_size]
                 # g_logits = linear(o_drop_t, data.TAG_NUM, scope='g_fc') # dims=[bs,tag_num]
                 # g_probs = tf.nn.softmax(g_logits,axis=1) # dims=[bs,tag_num]
 
@@ -150,6 +151,11 @@ class baseline(object):
         # bs = self.batch_size
 
         """ Graph Input """
+
+        # model inputs
+        self.max_len = tf.placeholder(tf.int32, name='max_len')
+        self.dropout_ph = tf.placeholder(tf.float32, name='dropout_ph')
+
         # generator inputs
         self.generator_input = tf.placeholder(shape=[self.batch_size, self.seq_len+2], dtype=tf.int32, name='generator_input')
         self.generator_mask = tf.placeholder(shape=[self.batch_size, self.seq_len+2], dtype=tf.int32, name='generator_mask')
@@ -236,10 +242,9 @@ class baseline(object):
         self.writer = tf.summary.FileWriter(self.log_dir + '/' + self.model_name, self.sess.graph)
 
         # load text
-        t0 = time.time()
+        start_load = time.time()
         self.text = data.load_sanity_data()
-        t1 = time.time()
-        print("load data takes %0.2f"%(t1-t0))
+        print("load data takes %0.2f [sec]"%(time.time()-start_load))
         self.num_batches = len(self.text) // (self.batch_size * 2)
 
         # restore check-point if it exits
@@ -255,20 +260,21 @@ class baseline(object):
             counter = 1
             print(" [!] Load failed...")
 
-        max_len_list = [1, 1 ,2 ,2, 4, 4, 8, 8, 16, 16, 32, 32]
+        max_len_list = sorted([1, 2, 4, 8, 16, 32] * (self.epoch//6+1))
 
         # loop for epoch
         start_time = time.time()
-        assert(self.epoch == len(max_len_list))
         for epoch in range(start_epoch, self.epoch):
             # self.visualize_results(epoch, max_len=32)  # for debug - max len remains constant and maximal
             #arrange data
+            start_epoch_time = time.time()
             cur_max_len = max_len_list[epoch]
-            t2 = time.time()
+            print("===starting epoch [%0d] with [max_len=%0d]==="%(epoch,cur_max_len))
+
+            start_shuffling = time.time()
             mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=cur_max_len, seq_len=self.seq_len,
                                                             mode='th_extended')
-            t3 = time.time()
-            print("create_shuffle_data takes %0.2f" % (t3 - t2))
+            print("create_shuffle_data takes %0.2f" % (time.time() - start_shuffling))
 
             # get batch data
             for idx in range(start_batch_id, self.num_batches):
@@ -286,7 +292,8 @@ class baseline(object):
                                                           self.generator_input: batch_sents_generator,
                                                           self.generator_mask: batch_mask_generator,
                                                           self.z: batch_z,
-                                                          self.max_len: cur_max_len})
+                                                          self.max_len: cur_max_len,
+                                                          self.dropout_ph: self.dropout_rate_for_train})
                 self.writer.add_summary(summary_str, counter)
 
                 # update G network
@@ -296,40 +303,35 @@ class baseline(object):
                                                            feed_dict={self.z: batch_z,
                                                                       self.generator_mask: batch_mask_generator,
                                                                       self.generator_input: batch_sents_generator,
-                                                                      self.max_len: cur_max_len})
+                                                                      self.max_len: cur_max_len,
+                                                                      self.dropout_ph: self.dropout_rate_for_train})
                     self.writer.add_summary(summary_str, counter)
 
-                # #for debug
-                # if idx % 10 == 0:
-                #     batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
-                #     out_data, out_gen, out, output_prob = self.sess.run([
-                #                                             self.g_debug_dict['out_data'],
-                #                                             self.g_debug_dict['out_gen'],
-                #                                             self.g_debug_dict['out'],
-                #                                             self.g_debug_dict['output_prob']],
-                #                                            feed_dict={self.z: batch_z,
-                #                                                       self.generator_mask: batch_mask_generator,
-                #                                                       self.generator_input: batch_sents_generator,
-                #                                                       self.max_len: cur_max_len})
-                #     print('debug')
+                #for debug
+                if self.debug_mode and idx % 10 == 0:
+                    batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
+                    out_data, out_gen, out, output_prob = self.sess.run([
+                                                            self.g_debug_dict['out_data'],
+                                                            self.g_debug_dict['out_gen'],
+                                                            self.g_debug_dict['out'],
+                                                            self.g_debug_dict['output_prob']],
+                                                           feed_dict={self.z: batch_z,
+                                                                      self.generator_mask: batch_mask_generator,
+                                                                      self.generator_input: batch_sents_generator,
+                                                                      self.max_len: cur_max_len,
+                                                                      self.dropout_ph: self.dropout_rate_for_train})
+                    print('debug\n')
 
                 counter += 1
 
 
                 # display training status
-                print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
-                      % (epoch, idx, self.num_batches, time.time() - start_time, d_loss, g_loss))
+                print("\rEpoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
+                      % (epoch, idx, self.num_batches, time.time() - start_time, d_loss, g_loss),end='')
 
-                # # save training results for every 300 steps
-                # if np.mod(counter, 300) == 0:
-                #     samples = self.sess.run(self.fake_sents,
-                #                             feed_dict={self.z: self.sample_z})
-                #     tot_num_samples = min(self.sample_num, self.batch_size)
-                #     manifold_h = int(np.floor(np.sqrt(tot_num_samples)))
-                #     manifold_w = int(np.floor(np.sqrt(tot_num_samples)))
-                #     save_images(samples[:manifold_h * manifold_w, :, :, :], [manifold_h, manifold_w],
-                #                 './' + check_folder(self.result_dir + '/' + self.model_dir) + '/' + self.model_name + '_train_{:02d}_{:04d}.png'.format(
-                #                     epoch, idx))
+                # save training results for every 1000 steps
+                if np.mod(counter, 1000) == 0:
+                    self.visualize_results(counter, max_len=32,description='step')
 
             # After an epoch, start_batch_id is set to zero
             # non-zero value is only for the first epoch after loading pre-trained model
@@ -341,10 +343,13 @@ class baseline(object):
             # show temporal results
             self.visualize_results(epoch,max_len=32) # for debug - max len remains constant and maximal
 
+            print("\rEpoch SUMMARY: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
+                  % (epoch, idx, self.num_batches, time.time() - start_epoch_time, d_loss, g_loss))
+
         # save model for final step
         self.save(self.checkpoint_dir, counter)
 
-    def visualize_results(self, epoch, max_len):
+    def visualize_results(self, epoch, max_len, description='epoch'):
         tot_num_samples = min(self.sample_num, self.batch_size)
 
         """ random condition, random noise """
@@ -355,7 +360,8 @@ class baseline(object):
         samples = self.sess.run(self.fake_sents, feed_dict={self.z: z_sample,
                                                             self.generator_mask: batch_empty_mask,
                                                             self.generator_input: batch_empty_data,
-                                                            self.max_len: max_len})
+                                                            self.max_len: max_len,
+                                                            self.dropout_ph: 1.})
         tags = np.argmax(samples, axis=2).astype(int)
         sentences = []
 
@@ -374,7 +380,7 @@ class baseline(object):
         if not os.path.isdir(os.path.join('results', 'baseline')):
             os.mkdir(os.path.join('results', 'baseline'))
 
-        save_path = os.path.join('results', 'baseline', 'results_epoch_' + str(epoch) + '.txt')
+        save_path = os.path.join('results', 'baseline', 'results_' + description + '_' + str(epoch) + '.txt')
         with open(save_path, 'w') as file:
             file.write(text)
 

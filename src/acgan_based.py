@@ -24,6 +24,7 @@ class acgan_based(object):
         self.log_dir = log_dir
         self.epoch = epoch
         self.batch_size = batch_size
+        self.debug_mode = False
 
         if dataset_name == 'sanity_data':
             # parameters
@@ -31,7 +32,7 @@ class acgan_based(object):
             self.class_embed_size = 32
             self.class_num = 3
             self.hidden_size = self.embed_size
-            self.dropout_rate = 0.5
+            self.dropout_rate_for_train = 0.5
             self.z_dim = self.hidden_size
             self.seq_len = 32
 
@@ -78,7 +79,7 @@ class acgan_based(object):
                                      true_fn= lambda: gru(h,input_embeddings[:,i,:],scope='d_gru') ,
                                      false_fn= lambda: (h, o_t) )
                     # h, o_t = gru(h,input_embeddings[:,i,:],scope='d_gru')
-            final_state_drop = tf.nn.dropout(o_t, self.dropout_rate, name='final_state_drop')
+            final_state_drop = tf.nn.dropout(o_t, self.dropout_ph, name='final_state_drop')
             out_for_classifier = final_state_drop
             out_logit = linear(final_state_drop, 1, scope='d_fc')
             out = tf.nn.sigmoid(out_logit)
@@ -137,11 +138,11 @@ class acgan_based(object):
                 x = x_data + x_gen #dims=[bs,embed_size+class_embed_size]
 
                 g_probs = tf.cond(pred=tf.less(tf.constant(i), max_len + 2),
-                                 true_fn=lambda: tf.nn.softmax(linear(tf.nn.dropout((gru(x, h, scope='g_gru'))[1], self.dropout_rate, name='o_drop_t'), data.TAG_NUM, scope='g_fc'),axis=1),
+                                 true_fn=lambda: tf.nn.softmax(linear(tf.nn.dropout((gru(x, h, scope='g_gru'))[1], self.dropout_ph, name='o_drop_t'), data.TAG_NUM, scope='g_fc'),axis=1),
                                  false_fn=lambda: g_probs)
 
                 # h, o_t = gru(x, h, scope='g_gru')
-                # o_drop_t = tf.nn.dropout(o_t, self.dropout_rate, name='o_drop_t') # dims=[bs,hidden_size]
+                # o_drop_t = tf.nn.dropout(o_t, self.dropout_ph, name='o_drop_t') # dims=[bs,hidden_size]
                 # g_logits = linear(o_drop_t, data.TAG_NUM, scope='g_fc') # dims=[bs,tag_num]
                 # g_probs = tf.nn.softmax(g_logits,axis=1) # dims=[bs,tag_num]
 
@@ -168,11 +169,15 @@ class acgan_based(object):
 
     def build_model(self):
         """ Graph Input """
+
+        # model inputs
+        self.max_len = tf.placeholder(tf.int32, name='max_len')
+        self.dropout_ph = tf.placeholder(tf.float32, name='dropout_ph')
+
         # generator inputs
         self.generator_input = tf.placeholder(shape=[self.batch_size, self.seq_len+2], dtype=tf.int32, name='generator_input')
         self.generator_mask = tf.placeholder(shape=[self.batch_size, self.seq_len+2], dtype=tf.int32, name='generator_mask')
         self.z = tf.placeholder(tf.float32, shape=[self.batch_size, self.hidden_size], name='z')
-        self.max_len = tf.placeholder(tf.int32, name='max_len')
         self.generator_class = tf.placeholder(dtype=tf.int32, name='generator_class', shape=self.batch_size)
         self.generator_class_one_hot = tf.one_hot(self.generator_class, dtype=tf.float32, depth=self.class_num)
 
@@ -277,6 +282,7 @@ class acgan_based(object):
         self.q_sum = tf.summary.merge([q_loss_sum, q_loss_real_sum, q_loss_fake_sum, q_output_real_sum,
                                        q_output_fake_sum] + c_vars_sum)
 
+
     def train(self):
 
         # initialize all variables
@@ -292,7 +298,9 @@ class acgan_based(object):
         self.writer = tf.summary.FileWriter(self.log_dir + '/' + self.model_name, self.sess.graph)
 
         # load text
+        start_load = time.time()
         self.text = data.load_sanity_data()
+        print("load data takes %0.2f [sec]"%(time.time()-start_load))
         self.num_batches = len(self.text) // (self.batch_size * 2)
 
         # restore check-point if it exits
@@ -308,17 +316,21 @@ class acgan_based(object):
             counter = 1
             print(" [!] Load failed...")
 
-        max_len_list = [1, 1 ,2 ,2, 4, 4, 8, 8, 16, 16, 32, 32]
+        max_len_list = sorted([1, 2, 4, 8, 16, 32] * (self.epoch//6+1))
 
         # loop for epoch
         start_time = time.time()
-        assert(self.epoch == len(max_len_list))
         for epoch in range(start_epoch, self.epoch):
             # self.visualize_results(epoch, max_len=32)  # for debug - max len remains constant and maximal
             #arrange data
+            start_epoch_time = time.time()
             cur_max_len = max_len_list[epoch]
+            print("===starting epoch [%0d] with [max_len=%0d]==="%(epoch,cur_max_len))
+
+            start_shuffling = time.time()
             mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=cur_max_len, seq_len=self.seq_len,
                                                             mode='th_extended')
+            print("create_shuffle_data takes %0.2f [sec]" % (time.time() - start_shuffling))
 
             # get batch data
             for idx in range(start_batch_id, self.num_batches):
@@ -331,59 +343,57 @@ class acgan_based(object):
                 batch_mask_generator = batch_mask[:self.batch_size]
 
                 # update D network
-                _, summary_str, d_loss, q_loss = self.sess.run([self.d_optim, self.d_sum, self.d_loss, self.q_loss],
+                _, summary_str, d_loss, q_loss,c_summary_str = self.sess.run([self.d_optim, self.d_sum, self.d_loss, self.q_loss, self.q_sum],
                                                feed_dict={self.discrimnator_input: batch_sents_discriminator,
                                                           self.generator_input: batch_sents_generator,
                                                           self.generator_mask: batch_mask_generator,
                                                           self.generator_class: np.ones(self.batch_size, dtype=np.int32),
                                                           self.discriminator_class: np.ones(self.batch_size, dtype=np.int32),
                                                           self.z: batch_z,
-                                                          self.max_len: cur_max_len}) #FIXME - update generator and discriminator class
+                                                          self.max_len: cur_max_len,
+                                                          self.dropout_ph: self.dropout_rate_for_train}) #FIXME - update generator and discriminator class
                 self.writer.add_summary(summary_str, counter)
+                self.writer.add_summary(c_summary_str, counter)
 
                 # update G network
                 if (counter-1) % self.disc_iters == 0:
                     batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
-                    _, summary_str, c_summary_str, g_loss = self.sess.run([self.g_optim, self.g_sum, self.q_sum, self.g_loss],
+                    _, summary_str, g_loss = self.sess.run([self.g_optim, self.g_sum, self.g_loss],
                                                            feed_dict={self.z: batch_z,
                                                                       self.generator_mask: batch_mask_generator,
                                                                       self.generator_input: batch_sents_generator,
                                                                       self.generator_class: np.ones(self.batch_size, dtype=np.int32),
-                                                                      self.max_len: cur_max_len}) #FIXME - update generator class
+                                                                      self.max_len: cur_max_len,
+                                                                      self.dropout_ph: self.dropout_rate_for_train}) #FIXME - update generator class
                     self.writer.add_summary(summary_str, counter)
-                    self.writer.add_summary(c_summary_str, counter)
 
                 # #for debug
-                # if idx % 10 == 0:
-                #     batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
-                #     out_data, out_gen, out, output_prob = self.sess.run([
-                #                                             self.g_debug_dict['out_data'],
-                #                                             self.g_debug_dict['out_gen'],
-                #                                             self.g_debug_dict['out'],
-                #                                             self.g_debug_dict['output_prob']],
-                #                                            feed_dict={self.z: batch_z,
-                #                                                       self.generator_mask: batch_mask_generator,
-                #                                                       self.generator_input: batch_sents_generator,
-                #                                                       self.max_len: cur_max_len})
-                #     print('debug')
+                if self.debug_mode and idx % 10 == 0:
+                    batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
+                    out_data, out_gen, out, output_prob = self.sess.run([
+                                                            self.g_debug_dict['out_data'],
+                                                            self.g_debug_dict['out_gen'],
+                                                            self.g_debug_dict['out'],
+                                                            self.g_debug_dict['output_prob']],
+                                                            feed_dict={self.z: batch_z,
+                                                                      self.generator_mask: batch_mask_generator,
+                                                                      self.generator_input: batch_sents_generator,
+                                                                      self.max_len: cur_max_len,
+                                                                      self.dropout_ph: self.dropout_rate_for_train})
+                    print('debug\n')
 
                 counter += 1
 
 
                 # display training status
-                print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f, q_loss: %.8f" \
-                      % (epoch, idx, self.num_batches, time.time() - start_time, d_loss, g_loss, q_loss))
+                print("\rEpoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f, q_loss: %.8f" \
+                      % (epoch, idx, self.num_batches, time.time() - start_time, d_loss, g_loss, q_loss),end='')
 
-                # # save training results for every 300 steps
-                # if np.mod(counter, 300) == 0:
-                #     samples = self.sess.run(self.fake_sents,
-                #                             feed_dict={self.z: self.sample_z})
-                #     tot_num_samples = min(self.sample_num, self.batch_size)
-                #     manifold_h = int(np.floor(np.sqrt(tot_num_samples)))
-                #     manifold_w = int(np.floor(np.sqrt(tot_num_samples)))
-                #     save_images(samples[:manifold_h * manifold_w, :, :, :], [manifold_h, manifold_w],
-                #                 './' + check_folder(self.result_dir + '/' + self.model_dir) + '/' + self.model_name + '_train_{:02d}_{:04d}.png'.format(
-                #                     epoch, idx))
+                # save training results for every 1000 steps
+                if np.mod(counter, 1000) == 0:
+                    self.visualize_results(counter, max_len=32,description='step')
+
+
 
             # After an epoch, start_batch_id is set to zero
             # non-zero value is only for the first epoch after loading pre-trained model
@@ -395,10 +405,13 @@ class acgan_based(object):
             # show temporal results
             self.visualize_results(epoch,max_len=32) # for debug - max len remains constant and maximal
 
+            print("\rEpoch SUMMARY: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f, q_loss: %.8f" \
+                  % (epoch, idx, self.num_batches, time.time() - start_epoch_time, d_loss, g_loss, q_loss))
+
         # save model for final step
         self.save(self.checkpoint_dir, counter)
 
-    def visualize_results(self, epoch, max_len):
+    def visualize_results(self, epoch, max_len, description='epoch'):
         tot_num_samples = min(self.sample_num, self.batch_size)
 
         """ random condition, random noise """
@@ -410,7 +423,8 @@ class acgan_based(object):
                                                             self.generator_mask: batch_empty_mask,
                                                             self.generator_input: batch_empty_data,
                                                             self.generator_class: np.ones(self.batch_size, dtype=np.int32),
-                                                            self.max_len: max_len}) #FIXME - update generator class
+                                                            self.max_len: max_len,
+                                                            self.dropout_ph: 1.0}) #FIXME - update generator class
         tags = np.argmax(samples, axis=2).astype(int)
         sentences = []
 
@@ -429,7 +443,7 @@ class acgan_based(object):
         if not os.path.isdir(os.path.join('results', 'baseline')):
             os.mkdir(os.path.join('results', 'baseline'))
 
-        save_path = os.path.join('results', 'baseline', 'results_epoch_' + str(epoch) + '.txt')
+        save_path = os.path.join('results', 'baseline', 'results_' + description +'_' + str(epoch) + '.txt')
         with open(save_path, 'w') as file:
             file.write(text)
 

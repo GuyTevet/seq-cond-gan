@@ -106,7 +106,8 @@ def main():
         print(" [*] Training finished!")
 
         # visualize learned generator
-        gan.visualize_results(args.epoch-1)
+        # gan.visualize_results(args.epoch-1)
+        gan.visualize_results(args.epoch-1, max_len=32,description='TEST')
         print(" [*] Testing finished!")
 
 if __name__ == '__main__':
