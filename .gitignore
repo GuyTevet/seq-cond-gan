@@ -105,4 +105,15 @@ venv.bak/
 
 # data ignore
 data/*
+src/.cache/*
+src/checkpoint/*
+src/logs/*
+src/results/*
+.cache/*
+checkpoint/*
+logs/*
+results/*
+.idea
+
+
 
