@@ -236,7 +236,10 @@ class baseline(object):
         self.writer = tf.summary.FileWriter(self.log_dir + '/' + self.model_name, self.sess.graph)
 
         # load text
+        t0 = time.time()
         self.text = data.load_sanity_data()
+        t1 = time.time()
+        print("load data takes %0.2f"%(t1-t0))
         self.num_batches = len(self.text) // (self.batch_size * 2)
 
         # restore check-point if it exits
@@ -261,8 +264,11 @@ class baseline(object):
             # self.visualize_results(epoch, max_len=32)  # for debug - max len remains constant and maximal
             #arrange data
             cur_max_len = max_len_list[epoch]
+            t2 = time.time()
             mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=cur_max_len, seq_len=self.seq_len,
                                                             mode='th_extended')
+            t3 = time.time()
+            print("create_shuffle_data takes %0.2f" % (t3 - t2))
 
             # get batch data
             for idx in range(start_batch_id, self.num_batches):
