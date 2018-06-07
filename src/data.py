@@ -57,8 +57,8 @@ def text2feed_tags(sents, is_var_len=True, max_len=32, seq_len=32):
             len = random.randrange(1,max_len+1)
         else:
             len = max_len
-        for i, char in enumerate(sent[:len]):
-            tags[i+1] = char2tag(char)
+        for i, tag in enumerate(sent[:len]):
+            tags[i+1] = tag
         feed_tags.append(tags)
         len_list.append(len)
     return feed_tags , len_list
@@ -87,7 +87,15 @@ def load_sanity_data():
     sanity_text_path = os.path.join('..', 'data', 'europarl-v6.en')
     with open(sanity_text_path,'r', encoding='utf8') as file:
         text = file.read()
-    return text2sents(text[:100000000])
+    sents = text2sents(text[:100000000])
+    tag_sents = []
+    for sent in sents:
+        tag_sent = []
+        for char in sent:
+            tag_sent.append(char2tag(char))
+        tag_sents.append(tag_sent)
+
+    return tag_sents
 
 def create_shuffle_data(text,max_len,seq_len,mode):
     feed_tags , len_list = text2feed_tags(text,is_var_len=True,max_len=max_len,seq_len=seq_len)
