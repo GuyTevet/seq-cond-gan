@@ -4,41 +4,33 @@ import os
 import random
 
 #consts
-# ASCII_OFFSET = 32
-# ASCII_LEN = 126 - 32
-# UNK_TAG = ASCII_LEN # '~'
-# START_TAG = UNK_TAG + 1
-# END_TAG = UNK_TAG + 2
+ASCII_FIRST = 32
+ASCII_LAST = 126
+DICT_TYPE = 'ascii' #supporting {ascii,simple}
 
-space = [' ']
-a_z = [chr(idx) for idx in range(ord('a'),ord('z')+1)]
-A_Z = [chr(idx) for idx in range(ord('A'),ord('Z')+1)]
-one_zero = [chr(idx) for idx in range(ord('1'),ord('0')+1)]
-special = ['UNK', 'START' , 'END']
-chars = space + a_z + A_Z + one_zero + special
+#create char dict
+if DICT_TYPE == 'simple':
+    space = [' ']
+    a_z = [chr(idx) for idx in range(ord('a'),ord('z')+1)]
+    A_Z = [chr(idx) for idx in range(ord('A'),ord('Z')+1)]
+    one_zero = [chr(idx) for idx in range(ord('1'),ord('0')+1)]
+    special = ['UNK', 'START' , 'END']
+    chars = space + a_z + A_Z + one_zero + special
+elif DICT_TYPE == 'ascii':
+    chars = [chr(i) for i in range(32,127)] + ['UNK', 'START' , 'END']
+else:
+    raise NotImplementedError()
+
 char_dict = {chars[idx] : idx for idx in range(len(chars))}
 tag_dict = {idx : chars[idx] for idx in range(len(chars))}
 
 TAG_NUM = len(chars)
 END_TAG = char_dict['END']
 
-# def char2tag(char):
-#     assert type(char) == str
-#     assert len(char) == 1
-#     tag = ord(char) - ASCII_OFFSET
-#     if tag < 0 or tag > (ASCII_LEN - 1):
-#         #print char #for debug UNKS
-#         tag = UNK_TAG
-#     return tag
-
 def char2tag(char):
     assert type(char) == str
     assert len(char) == 1
     return char_dict.get(char,char_dict['UNK'])
-
-# def tag2char(tag):
-#     assert type(tag) == int
-#     return chr(tag + ASCII_OFFSET)
 
 def tag2char(tag):
     assert type(tag) == int
