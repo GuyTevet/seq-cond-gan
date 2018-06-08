@@ -6,7 +6,9 @@ from datetime import datetime
 import json
 import sys
 from tqdm import tqdm
+import time
 import operator
+import threading
 
 class Data_handler(object):
 
@@ -63,14 +65,9 @@ class Reddit_data_handler(Data_handler):
         self.subreddit_list = subreddit_list
         self.debug_mode = debug_mode
 
-        #dirs & files
-        self.tmp_json_file = os.path.join(self.output_dir,'tmp.json')
-        self.histogram = os.path.join(self.output_dir,'histogram.json')
-
-
     def extract_bz2_file(self,file_path,save_path):
         with open(save_path, 'wb') as new_file, bz2.BZ2File(file_path, 'rb') as file:
-            for data in tqdm(iter(lambda: file.read(1024 * 1024), b'')):
+            for data in iter(lambda: file.read(1024 * 1024), b''):
                 new_file.write(data)
 
     def text_block(self,files, size=65536):
@@ -79,12 +76,14 @@ class Reddit_data_handler(Data_handler):
             if not b: break
             yield b
 
-    def json_process(self,input_path):
+    def json_process(self,input_path,output_dir):
+
+        hist_path = os.path.join(output_dir,'hist.json')
 
         #try open statistics histogram
         if self.debug_mode:
-            if os.path.exists(self.histogram):
-                with open(self.histogram,'r') as f:
+            if os.path.exists(hist_path):
+                with open(hist_path,'r') as f:
                     hist = json.load(f)
             else:
                 hist = {}
@@ -99,13 +98,15 @@ class Reddit_data_handler(Data_handler):
                 try:
                     comment = json.loads(line)
                     subreddit = comment['subreddit']
-                    body = comment['body'].replace('\n',' ')
+                    body = comment['body']
 
                     #add comment if not empty
                     if str(subreddit) in self.subreddit_list:
                         if body != '': #empty
-                            if body[0] != '[' and not 'http' in body and not 'www' in body:
-                                with open(os.path.join(self.output_dir,subreddit + '.txt'),'a') as subreddit_file:
+                            if body[0] != '[' and not 'http' in body and not 'www' in body and len(body) > 3:
+                                body = body.replace('\n',' ').replace('\r',' ').replace('\t',' ')\
+                                    .replace('&lt;','<').replace('&gt;','>').replace('&amp;','&') #some modifications
+                                with open(os.path.join(output_dir,subreddit + '.txt'),'a') as subreddit_file:
                                     subreddit_file.write(body + '\n')
 
                     #statistics
@@ -121,32 +122,76 @@ class Reddit_data_handler(Data_handler):
 
                 if self.debug_mode and count % 10000 == 0:
                     hist['TOTAL_COMMENTS'] = count
-                    with open(self.histogram, 'w') as f:
+                    with open(hist_path, 'w') as f:
                         json.dump(hist,f)
 
                 count += 1
 
-    def summary(self):
+    def summary(self,output_dir):
 
-        for file in os.listdir(self.output_dir):
+        hist_path = os.path.join(output_dir, 'hist.json')
+
+        for file in os.listdir(output_dir):
             if file.endswith('.txt'):
                 subreddit = file.split('.')[0]
-                with open(os.path.join(self.output_dir,file), "r") as f:
+                with open(os.path.join(output_dir,file), "r") as f:
                     comments = sum(bl.count("\n") for bl in self.text_block(f))
                 logging.info("[%0s] contains [%0d] comments"%(subreddit,comments))
 
-        if self.debug_mode:
-            with open(self.histogram, 'r') as f:
-                hist = json.load(f)
+        # if self.debug_mode:
+        #     with open(hist_path, 'r') as f:
+        #         hist = json.load(f)
+        #
+        #     #sort
+        #     hist_sort = sorted(hist.items(), key=operator.itemgetter(1))
+        #     hist_sort = list(reversed(hist_sort))
+        #
+        #     top = 300
+        #     logging.info("[[TOP %0d]]"%top)
+        #     for i in range(top):
+        #         logging.info(str(hist_sort[i]))
 
-            #sort
-            hist_sort = sorted(hist.items(), key=operator.itemgetter(1))
-            hist_sort = list(reversed(hist_sort))
+    def merge(self):
 
-            top = 300
-            logging.info("[[TOP %0d]]"%top)
-            for i in range(top):
-                logging.info(str(hist_sort[i]))
+        dirs = [os.path.join(self.output_dir,f)
+                for f in os.listdir(self.output_dir)
+                if os.path.isdir(os.path.join(self.output_dir,f)) and f != 'log']
+
+        #merge
+        for subreddit in self.subreddit_list:
+            source = [os.path.join(dir, subreddit + '.txt')
+                      for dir in dirs
+                      if os.path.exists(os.path.join(dir, subreddit + '.txt'))]
+            target = os.path.join(self.output_dir, subreddit + '.txt')
+            with open(target, 'w') as outfile:
+                for fname in source:
+                    with open(fname) as infile:
+                        for line in infile:
+                            outfile.write(line)
+
+
+        #done - removing dirs
+        for dir in dirs:
+            shutil.rmtree(dir)
+
+
+    def process_single_file(self,bz2):
+
+        tmp_json = bz2 + '.json'
+        tmp_output = os.path.join(self.output_dir,os.path.basename(bz2).replace('.bz2',''))
+
+        if os.path.exists(tmp_output):
+            shutil.rmtree(tmp_output)
+        os.mkdir(tmp_output)
+
+        logging.info("extructing [%0s]..."%bz2)
+        self.extract_bz2_file(bz2,tmp_json)
+        logging.info("processing [%0s]..." % bz2)
+        self.json_process(tmp_json,tmp_output)
+        logging.info("deleting temp file [%0s]..." % bz2)
+        os.remove(tmp_json)
+        logging.info("[SUMMARY][%0s]"%bz2)
+        self.summary(tmp_output)
 
     def prepare_data(self):
 
@@ -160,25 +205,57 @@ class Reddit_data_handler(Data_handler):
             for file in files:
                 if '.bz2' in file:
                     bz2_files.append(os.path.join(root,file))
+        bz2_files.sort(key=lambda x: x.lower())
 
         # skip existing subreddits
-        files = os.listdir(self.output_dir)
         existing_subreddits = [s.split('.')[0] for s in os.listdir(self.output_dir) if s.endswith('.txt')]
         logging.info("%0s.txt already exists -> skipping" % existing_subreddits)
         self.subreddit_list = [e for e in self.subreddit_list if e not in existing_subreddits]
 
-        #process json
-        for bz2 in bz2_files:
-            if os.path.exists(self.tmp_json_file):
-                os.remove(self.tmp_json_file)
-            logging.info("extructing [%0s]..."%bz2)
-            self.extract_bz2_file(bz2,self.tmp_json_file)
-            logging.info("processing [%0s]..." % bz2)
-            self.json_process(self.tmp_json_file)
-            logging.info("deleting [%0s]..." % bz2)
-            os.remove(self.tmp_json_file)
-            logging.info("[SUMMARY]")
-            self.summary()
+        # thread parameters
+        num_bz2_files = len(bz2_files)
+        threads = []
+        threads_batch_size = 5
+        thread_last_batch_size = num_bz2_files % threads_batch_size
+        thread_batch_num = num_bz2_files // threads_batch_size
+
+        for i in range(thread_batch_num):
+
+            # prepare threads
+            for j in range(threads_batch_size):
+                thread = threading.Thread(target=self.process_single_file, args=(bz2_files[threads_batch_size * i + j],))
+                threads.append(thread)
+
+            # run threads
+            for thread in threads:
+                thread.start()
+
+            # wait for done
+            for thread in threads:
+                thread.join()
+
+            # remove threads
+            threads = []
+
+        # handle last batch
+        for j in range(thread_last_batch_size):
+            thread = threading.Thread(target=self.process_single_file, args=(bz2_files[threads_batch_size * thread_batch_num + j],))
+            threads.append(thread)
+
+        # run threads
+        for thread in threads:
+            thread.start()
+
+        # wait for done
+        for thread in threads:
+            thread.join()
+
+        # remove threads
+        threads = []
+
+        logging.info("[ALL DONE - MERGING]")
+        self.merge()
+
         self.logger_announce('done handling reddit data')
 
 
@@ -186,10 +263,16 @@ def sandbox():
     pass
 
 if __name__ == '__main__':
-    # sandbox()
-    R = Reddit_data_handler(input_dir='/Users/guytevet/nlp-final-project/datasets/reddit',
-                            output_dir='/Users/guytevet/nlp-final-project/datasets/reddit_sandbox',
-                            subreddit_list=['relationships','harrypotter'],
+
+    subreddits =     ['nfl','nba','gaming','soccer','movies','relationships','anime',
+     'electronic_cigarette','Fitness','technology','pokemon','PokemonPlaza',
+     'FIFA','Android','OkCupid','halo','bodybuilding','food','legaladvice',
+     'skyrim','formula1','DnD','Guitar','Homebrewing','DIY','relationship_advice',
+     'StarWars']
+
+    R = Reddit_data_handler(input_dir='/Volumes/###/reddit-dataset/reddit_data/2010',
+                            output_dir='/Volumes/###/reddit-dataset/reddit_out',
+                            subreddit_list=subreddits,
                             debug_mode=True)
 
     R.prepare_data()
