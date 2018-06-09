@@ -9,11 +9,21 @@ from tqdm import tqdm
 import time
 import operator
 import threading
+import h5py
+import numpy as np
+import argparse
 
+#local
+import data
+
+
+"""
+Data_handler (base class)
+"""
 class Data_handler(object):
 
-    def __init__(self,input_dir,output_dir):
-        self.input_dir = input_dir
+    def __init__(self,output_dir):
+
         self.output_dir = output_dir
         self.log_dir = os.path.join(self.output_dir,'log')
 
@@ -50,6 +60,9 @@ class Data_handler(object):
         #set logger
         self.set_logger()
 
+"""
+Reddit_data_handler
+"""
 class Reddit_data_handler(Data_handler):
     """
     preprocessing reddit comments data
@@ -61,14 +74,18 @@ class Reddit_data_handler(Data_handler):
     """
     def __init__(self,input_dir,output_dir,subreddit_list,debug_mode=False):
 
-        super(Reddit_data_handler, self).__init__(input_dir,output_dir)
+        super(Reddit_data_handler, self).__init__(output_dir)
+        self.input_dir = input_dir
         self.subreddit_list = subreddit_list
         self.debug_mode = debug_mode
 
     def extract_bz2_file(self,file_path,save_path):
-        with open(save_path, 'wb') as new_file, bz2.BZ2File(file_path, 'rb') as file:
-            for data in iter(lambda: file.read(1024 * 1024), b''):
-                new_file.write(data)
+        try:
+            with open(save_path, 'wb') as new_file, bz2.BZ2File(file_path, 'rb') as file:
+                for data in iter(lambda: file.read(1024 * 1024), b''):
+                    new_file.write(data)
+        except:
+            logging.info("UNEXPECTED ERROR DURING EXTRACT OF [%0s] - SKIPPING"%file_path)
 
     def text_block(self,files, size=65536):
         while True:
@@ -258,24 +275,190 @@ class Reddit_data_handler(Data_handler):
 
         self.logger_announce('done handling reddit data')
 
+"""
+H5_data_handler
+"""
+
+class H5_data_handler(Data_handler):
+
+    def __init__(self,label2files_dict,output_dir,seq_len=128,debug_mode=False):
+
+        super(H5_data_handler, self).__init__(output_dir)
+        self.label2files_dict = label2files_dict
+        self.debug_mode = debug_mode
+        self.seq_len = seq_len
+
+        #costs
+        self.num_rows_per_file = 8 * 1024 * 1024
+        self.num_labels = len(self.label2files_dict)
+        self.num_rows_per_label = self.num_rows_per_file // self.num_labels
+        self.num_rows_per_label_per_input_file = {label: self.num_rows_per_label // len(self.label2files_dict[label]) for label in self.label2files_dict.keys()}
+
+        #label dicts
+        self.label2num_dict = {label: i for i, label in enumerate(self.label2files_dict.keys())}
+        self.num2label_dict = {i: label for i, label in enumerate(self.label2files_dict.keys())}
+
+
+    def lines2tags(self,lines,label,seq_len=128):
+
+        tags = np.ones([len(lines),seq_len],dtype=np.uint8) * data.END_TAG
+        y = np.ones([len(lines),1],dtype=np.uint8) * self.label2num_dict[label]
+
+        for i, line in enumerate(lines):
+            for j in range(min(seq_len,len(lines[i]))):
+                tags[i,j] = data.char2tag(lines[i][j])
+
+        return tags , y
+
+    def concat_and_shuffle(self,list_of_tuples):
+        """
+        :param list_of_tuples: list of tuples structed (tags,labels)
+        :return: one tuple (tags,labels)
+        """
+        tags = tuple([tuple[0] for tuple in list_of_tuples])
+        labels = tuple([tuple[1] for tuple in list_of_tuples])
+
+        # concat
+        if len(tags) > 1:
+            tags = np.concatenate(tags,axis=0)
+            labels = np.concatenate(labels, axis=0)
+        else:
+            tags = tags[0]
+            labels = labels[0]
+
+        # shuffle
+        assert tags.shape[0] == labels.shape[0]
+        permut = np.random.permutation(labels.shape[0])
+        tags = tags[permut,:]
+        labels = labels[permut, :]
+
+        return tags, labels
+
+    def save_h5(self,tags,labels,h5_path):
+        with h5py.File(h5_path, 'w') as h5:
+            h5_tags = h5.create_dataset('tags',shape=tags.shape,dtype=tags.dtype, compression="gzip")
+            h5_tags[...] = tags
+            h5_labels = h5.create_dataset('labels', shape=labels.shape, dtype=labels.dtype, compression="gzip")
+            h5_labels[...] = labels
+
+    def prepare_data(self):
+
+        super(H5_data_handler, self).prepare_data()
+
+        self.logger_announce('start handling h5 process')
+
+        logging.info('[CREATING DATASET]')
+        logging.info(str(self.label2files_dict))
+
+        list_of_tuples = []
+
+        for label in self.label2files_dict.keys():
+            logging.info("[%0s] start processing label"%label)
+            for file_path in self.label2files_dict[label]:
+                logging.info("[%0s][%0s] start reading file" % (label, file_path))
+                with open(file_path,'r') as file:
+                    lines = [file.readline() for _ in range(self.num_rows_per_label_per_input_file[label])] #FIXME - handle end of file
+                logging.info("[%0s][%0s] start processing file" % (label, file_path))
+                tags, y = self.lines2tags(lines,label,seq_len=self.seq_len)
+                list_of_tuples.append((tags, y))
+
+        logging.info("start compressing everything to H5")
+        tags, y = self.concat_and_shuffle(list_of_tuples)
+        self.save_h5(tags,y,h5_path=os.path.join(self.output_dir,'fff.h5')) #FIXME - TEMP
+
+        if self.debug_mode:
+            self.h5_sanity_check(h5_path=os.path.join(self.output_dir,'fff.h5')) #FIXME - TEMP
+
+
+
+    def h5_sanity_check(self,h5_path):
+
+        logging.info("[%0s] start h5_sanity_check"%h5_path)
+
+        with h5py.File(h5_path, 'r') as h5:
+
+            for key in h5.keys():
+                logging.info("[%0s] %0s"%(key,str(h5[key].shape)))
+
+            logging.info("some samples:")
+
+            for line in range(100,120):
+                #extract sentance
+                sent = ''
+                i = 0
+                while i < self.seq_len:
+                    if h5['tags'][line,i] != data.END_TAG :
+                        sent += data.tag2char(int(h5['tags'][line,i]))
+                    else:
+                        break
+                    i += 1
+                logging.info(self.num2label_dict[int(h5['labels'][line][0])] + '\t\t' + sent)
+
+            t0 = time.time()
+            labels = h5['labels']
+            tags = h5['tags']
+            logging.info("data size in memory is [%0.2f MB]"%(tags.shape[0] * (tags.shape[1] + labels.shape[1]) / (1024. * 1024.)))
+            logging.info("loading all data took [%0.1f SEC]"%(time.time() - t0))
+            logging.info('labels histogram:')
+            unique, counts = np.unique(labels, return_counts=True)
+            logging.info(str(dict(zip(unique, counts))))
+
+
 
 def sandbox():
     pass
 
 if __name__ == '__main__':
+    desc = "DATA PREPROCESS"
+    parser = argparse.ArgumentParser(description=desc)
+    parser.add_argument('mode', type=str, choices=['reddit_parse', 'reddit_h5', 'news_h5', 'news_h5_eng_only'],
+                        help='supported modes are {reddit_parse,reddit_h5,news_h5,news_h5_eng_only}')
+    FLAGS = parser.parse_args()
 
-    subreddits =     ['nfl','nba','gaming','soccer','movies','relationships','anime',
-     'electronic_cigarette','Fitness','technology','pokemon','PokemonPlaza',
-     'FIFA','Android','OkCupid','halo','bodybuilding','food','legaladvice',
-     'skyrim','formula1','DnD','Guitar','Homebrewing','DIY','relationship_advice',
-     'StarWars']
+    if FLAGS.mode == 'reddit_parse':
 
-    R = Reddit_data_handler(input_dir='/Volumes/###/reddit-dataset/reddit_data/2010',
-                            output_dir='/Volumes/###/reddit-dataset/reddit_out',
-                            subreddit_list=subreddits,
-                            debug_mode=True)
+        subreddits =     ['nfl','nba','gaming','soccer','movies','relationships','anime',
+         'electronic_cigarette','Fitness','technology','pokemon','PokemonPlaza',
+         'FIFA','Android','OkCupid','halo','bodybuilding','food','legaladvice',
+         'skyrim','formula1','DnD','Guitar','Homebrewing','DIY','relationship_advice',
+         'StarWars']
 
-    R.prepare_data()
+        R = Reddit_data_handler(input_dir='/Volumes/###/reddit-dataset/reddit_data',
+                                output_dir='/Volumes/###/reddit-dataset/reddit_out',
+                                subreddit_list=subreddits,
+                                debug_mode=True)
+
+        R.prepare_data()
+
+        exit(0)
+
+    elif FLAGS.mode == 'reddit_h5':
+        pass
+
+    elif FLAGS.mode == 'news_h5':
+
+        label2files = {'en_news':
+                       ['/Users/guytevet/Downloads/training-monolingual/news.2008.en.shuffled',
+                        '/Users/guytevet/Downloads/training-monolingual/news.2009.en.shuffled',
+                        '/Users/guytevet/Downloads/training-monolingual/news.2010.en.shuffled'],
+                       'es_news':
+                       ['/Users/guytevet/Downloads/training-monolingual/news.2008.es.shuffled'],
+                       'de_news':
+                       ['/Users/guytevet/Downloads/training-monolingual/news.2008.de.shuffled']
+                       }
+
+        out_dir = '/Users/guytevet/Downloads/training-monolingual/h5_tmp'
+
+    elif FLAGS.mode == 'news_h5_en_only':
+        pass
+    else:
+        raise NotImplementedError()
+
+    H5 = H5_data_handler(label2files_dict=label2files,
+                         output_dir=out_dir,
+                         seq_len=64,
+                         debug_mode=True)
+    H5.prepare_data()
 
 
 
