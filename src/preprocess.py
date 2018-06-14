@@ -12,6 +12,8 @@ import threading
 import h5py
 import numpy as np
 import argparse
+from copy import copy
+import random
 
 #local
 import data
@@ -50,6 +52,30 @@ class Data_handler(object):
         logging.info('~*~*~*~*~*~~*~*~*~*~~*~*~*~')
         logging.info("DATA HANDLER - [%0s]"%str)
         logging.info('~*~*~*~*~*~~*~*~*~*~~*~*~*~')
+
+    def merge_txt(self,source_list,target):
+
+        with open(target, 'w') as outfile:
+            for fname in source_list:
+                with open(fname,'r') as infile:
+                    for line in infile:
+                        outfile.write(line)
+
+    def merge_shuffle_txt(self,source_list,target):
+
+        #open all source files
+        f_list = [open(f_path,'r') for f_path in source_list]
+
+        with open(target, 'w') as outfile:
+            while len(f_list) > 0 :
+                random_file = random.choice(f_list)
+                print(random_file) #TODO - REMOVE
+                random_line = random_file.readline()
+                if random_line != '':
+                    outfile.write(random_line)
+                else:
+                    random_file.close()
+                    f_list.remove(random_file)
 
     def prepare_data(self):
 
@@ -168,7 +194,7 @@ class Reddit_data_handler(Data_handler):
         #     for i in range(top):
         #         logging.info(str(hist_sort[i]))
 
-    def merge(self):
+    def merge_subreddits(self):
 
         dirs = [os.path.join(self.output_dir,f)
                 for f in os.listdir(self.output_dir)
@@ -180,16 +206,12 @@ class Reddit_data_handler(Data_handler):
                       for dir in dirs
                       if os.path.exists(os.path.join(dir, subreddit + '.txt'))]
             target = os.path.join(self.output_dir, subreddit + '.txt')
-            with open(target, 'w') as outfile:
-                for fname in source:
-                    with open(fname) as infile:
-                        for line in infile:
-                            outfile.write(line)
+            self.merge_shuffle_txt(source,target)
 
 
-        #done - removing dirs
-        for dir in dirs:
-            shutil.rmtree(dir)
+        # #done - removing dirs
+        # for dir in dirs:
+        #     shutil.rmtree(dir)
 
 
     def process_single_file(self,bz2):
@@ -271,7 +293,7 @@ class Reddit_data_handler(Data_handler):
         threads = []
 
         logging.info("[ALL DONE - MERGING]")
-        self.merge()
+        self.merge_subreddits()
 
         self.logger_announce('done handling reddit data')
 
@@ -357,7 +379,17 @@ class H5_data_handler(Data_handler):
             for file_path in self.label2files_dict[label]:
                 logging.info("[%0s][%0s] start reading file" % (label, file_path))
                 with open(file_path,'r') as file:
-                    lines = [file.readline() for _ in range(self.num_rows_per_label_per_input_file[label])] #FIXME - handle end of file
+                    lines = []
+
+                    for i in range(self.num_rows_per_label_per_input_file[label]):
+                        line = file.readline()
+                        if line != '':
+                            lines.append(line)
+                        else:
+                            missing_lines = self.num_rows_per_label_per_input_file[label] - i
+                            logging.info("missing %0d lines in label [%0s]"%(missing_lines,label))
+                            break # for i in range(self.num_rows_per_label_per_input_file[label])
+
                 logging.info("[%0s][%0s] start processing file" % (label, file_path))
                 tags, y = self.lines2tags(lines,label,seq_len=self.seq_len)
                 list_of_tuples.append((tags, y))
@@ -366,10 +398,9 @@ class H5_data_handler(Data_handler):
         tags, y = self.concat_and_shuffle(list_of_tuples)
         self.save_h5(tags,y,h5_path=os.path.join(self.output_dir,'fff.h5')) #FIXME - TEMP
 
-        if self.debug_mode:
-            self.h5_sanity_check(h5_path=os.path.join(self.output_dir,'fff.h5')) #FIXME - TEMP
+        self.h5_sanity_check(h5_path=os.path.join(self.output_dir,'fff.h5')) #FIXME - TEMP
 
-
+        self.logger_announce('done handling h5 process')
 
     def h5_sanity_check(self,h5_path):
 
@@ -394,11 +425,17 @@ class H5_data_handler(Data_handler):
                     i += 1
                 logging.info(self.num2label_dict[int(h5['labels'][line][0])] + '\t\t' + sent)
 
-            t0 = time.time()
             labels = h5['labels']
             tags = h5['tags']
+
+            # spent some to time to try and load all the data at once
+            if self.debug_mode:
+                t0 = time.time()
+                labels = np.array(labels)
+                tags = np.array(tags)
+                logging.info("loading all data took [%0.1f SEC]"%(time.time() - t0))
+
             logging.info("data size in memory is [%0.2f MB]"%(tags.shape[0] * (tags.shape[1] + labels.shape[1]) / (1024. * 1024.)))
-            logging.info("loading all data took [%0.1f SEC]"%(time.time() - t0))
             logging.info('labels histogram:')
             unique, counts = np.unique(labels, return_counts=True)
             logging.info(str(dict(zip(unique, counts))))
