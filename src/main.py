@@ -31,7 +31,7 @@ def parse_args():
 
     parser.add_argument('--gan_type', type=str, default='GAN',
                         choices=['baseline', 'acgan_based'], help='The type of GAN', required=True)
-    parser.add_argument('--dataset', type=str, default='sanity_data', choices=['mnist', 'fashion-mnist', 'celebA', 'sanity_data'],
+    parser.add_argument('--dataset', type=str, default='sanity_data', choices=['news_en_only', 'fashion-mnist', 'celebA', 'sanity_data'],
                         help='The name of dataset')
     parser.add_argument('--epoch', type=int, default=2, help='The number of epochs to run')
     parser.add_argument('--batch_size', type=int, default=64, help='The size of batch')

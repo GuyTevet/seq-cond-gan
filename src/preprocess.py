@@ -33,6 +33,12 @@ class Data_handler(object):
         date = datetime.now().strftime('%d-%m-%Y_%H:%M')
         self.log_file = os.path.join(self.log_dir,"log_%s.txt"%date)
 
+    def text_block(self,files, size=65536):
+        while True:
+            b = files.read(size)
+            if not b: break
+            yield b
+
     def set_logger(self):
 
         if not os.path.isdir(self.log_dir):
@@ -63,13 +69,14 @@ class Data_handler(object):
 
     def merge_shuffle_txt(self,source_list,target):
 
+        logging.info("[merge_shuffle_txt] %s to [%s]"%(str(source_list),target))
+
         #open all source files
         f_list = [open(f_path,'r') for f_path in source_list]
 
         with open(target, 'w') as outfile:
             while len(f_list) > 0 :
                 random_file = random.choice(f_list)
-                print(random_file) #TODO - REMOVE
                 random_line = random_file.readline()
                 if random_line != '':
                     outfile.write(random_line)
@@ -112,12 +119,6 @@ class Reddit_data_handler(Data_handler):
                     new_file.write(data)
         except:
             logging.info("UNEXPECTED ERROR DURING EXTRACT OF [%0s] - SKIPPING"%file_path)
-
-    def text_block(self,files, size=65536):
-        while True:
-            b = files.read(size)
-            if not b: break
-            yield b
 
     def json_process(self,input_path,output_dir):
 
@@ -303,18 +304,18 @@ H5_data_handler
 
 class H5_data_handler(Data_handler):
 
-    def __init__(self,label2files_dict,output_dir,seq_len=128,debug_mode=False):
+    def __init__(self,name,label2files_dict,output_dir,seq_len=128,debug_mode=False):
 
         super(H5_data_handler, self).__init__(output_dir)
         self.label2files_dict = label2files_dict
         self.debug_mode = debug_mode
         self.seq_len = seq_len
+        self.name = name
+        self.dataset_name = self.name + '_seq-' + str(seq_len) + '_dict-' + data.DICT_TYPE + '_classes-' +str(len(label2files_dict.keys()))
 
         #costs
-        self.num_rows_per_file = 8 * 1024 * 1024
+        self.max_rows_in_memory = 1 * 1024 * 1024
         self.num_labels = len(self.label2files_dict)
-        self.num_rows_per_label = self.num_rows_per_file // self.num_labels
-        self.num_rows_per_label_per_input_file = {label: self.num_rows_per_label // len(self.label2files_dict[label]) for label in self.label2files_dict.keys()}
 
         #label dicts
         self.label2num_dict = {label: i for i, label in enumerate(self.label2files_dict.keys())}
@@ -332,36 +333,47 @@ class H5_data_handler(Data_handler):
 
         return tags , y
 
-    def concat_and_shuffle(self,list_of_tuples):
-        """
-        :param list_of_tuples: list of tuples structed (tags,labels)
-        :return: one tuple (tags,labels)
-        """
-        tags = tuple([tuple[0] for tuple in list_of_tuples])
-        labels = tuple([tuple[1] for tuple in list_of_tuples])
+    def h5_create(self,num_lines,h5_path):
 
-        # concat
-        if len(tags) > 1:
-            tags = np.concatenate(tags,axis=0)
-            labels = np.concatenate(labels, axis=0)
-        else:
-            tags = tags[0]
-            labels = labels[0]
+        logging.info("creating [%0s]..." % h5_path)
 
-        # shuffle
-        assert tags.shape[0] == labels.shape[0]
-        permut = np.random.permutation(labels.shape[0])
-        tags = tags[permut,:]
-        labels = labels[permut, :]
-
-        return tags, labels
-
-    def save_h5(self,tags,labels,h5_path):
         with h5py.File(h5_path, 'w') as h5:
-            h5_tags = h5.create_dataset('tags',shape=tags.shape,dtype=tags.dtype, compression="gzip")
-            h5_tags[...] = tags
-            h5_labels = h5.create_dataset('labels', shape=labels.shape, dtype=labels.dtype, compression="gzip")
-            h5_labels[...] = labels
+            h5_tags = h5.create_dataset('tags',shape=(num_lines,self.seq_len),
+                                             dtype=np.uint8, compression="gzip")
+            h5_labels = h5.create_dataset('labels',shape=(num_lines,1),
+                                               dtype=np.uint8, compression="gzip")
+
+    def h5_append(self,tags,labels,iter,h5_path):
+
+        start_idx = self.max_rows_in_memory * iter
+        end_idx = start_idx + labels.shape[0]
+
+        with h5py.File(h5_path, 'a') as h5:
+            h5['tags'][start_idx:end_idx,:] = tags
+            h5['labels'][start_idx:end_idx, :] = labels
+
+
+    def h5_shuffle(self,h5_path):
+
+        logging.info("shuffling [%0s]..."%h5_path)
+        t0 = time.time()
+
+        with h5py.File(h5_path, 'r+') as h5_orig :#, h5py.File(h5_temp_path, 'w') as h5_temp:
+
+            #load all dataset to memory - a bad habit but the fastes way to do this
+            tags = np.array(h5_orig['tags'])
+            labels = np.array(h5_orig['labels'])
+
+            # and shuffle
+            permut = np.random.permutation(h5_orig['labels'].shape[0])
+            h5_orig['tags'][...] = tags[permut,:]
+            h5_orig['labels'][...] = labels[permut, :]
+
+        logging.info("shuffling took [%0.2f SEC]" %(time.time() - t0))
+
+    def json_dump(self,dict,json_path):
+        with open(json_path, 'w') as f:
+            json.dump(dict, f)
 
     def prepare_data(self):
 
@@ -369,42 +381,79 @@ class H5_data_handler(Data_handler):
 
         self.logger_announce('start handling h5 process')
 
-        logging.info('[CREATING DATASET]')
+        logging.info("[CREATING DATASET][%0s]"%self.dataset_name)
         logging.info(str(self.label2files_dict))
 
-        list_of_tuples = []
+        h5_path = os.path.join(self.output_dir, self.dataset_name + '.h5')
+        json_path = os.path.join(self.output_dir, self.dataset_name + '.json')
 
+        # merge files with same label
+        merge_dir = os.path.join(self.output_dir,'merge')
+        if not os.path.isdir(merge_dir):
+            os.mkdir(merge_dir)
+
+        # merge and shuffle text files from the same tags
+        label2merge_dict = {label: os.path.join(merge_dir,label + '.txt') for label in self.label2files_dict.keys()}
         for label in self.label2files_dict.keys():
+            if len(self.label2files_dict[label]) ==1: # no merge needed
+                label2merge_dict[label] = self.label2files_dict[label][0]
+            elif os.path.exists(label2merge_dict[label]):
+                pass
+            else: # merge needed
+                self.merge_shuffle_txt(source_list=self.label2files_dict[label],
+                                       target=label2merge_dict[label])
+
+        # choose num of rows per label according to the shortest file
+        label2rows_dict = {}
+        for label in label2merge_dict.keys():
+            with open(label2merge_dict[label], "r") as f:
+                comments = sum(bl.count("\n") for bl in self.text_block(f))
+                label2rows_dict[label] = comments
+
+        rows_per_label = min(label2rows_dict.values())
+
+        # split to iteration - preventing memory overload
+        num_iters = rows_per_label // self.max_rows_in_memory
+        last_iter_size = rows_per_label % self.max_rows_in_memory
+
+        logging.info("num of raws per label:\n%0s"%str(label2rows_dict))
+        logging.info("rows_per_label is the minimum [%0d] rows"%rows_per_label)
+
+        # processing the merged files to h5
+        self.h5_create(num_lines= rows_per_label * self.num_labels, h5_path=h5_path)
+
+        for label in label2merge_dict.keys():
             logging.info("[%0s] start processing label"%label)
-            for file_path in self.label2files_dict[label]:
-                logging.info("[%0s][%0s] start reading file" % (label, file_path))
-                with open(file_path,'r') as file:
-                    lines = []
+            logging.info("[%0s][%0s] start processing file" % (label, label2merge_dict[label]))
 
-                    for i in range(self.num_rows_per_label_per_input_file[label]):
-                        line = file.readline()
-                        if line != '':
-                            lines.append(line)
-                        else:
-                            missing_lines = self.num_rows_per_label_per_input_file[label] - i
-                            logging.info("missing %0d lines in label [%0s]"%(missing_lines,label))
-                            break # for i in range(self.num_rows_per_label_per_input_file[label])
 
-                logging.info("[%0s][%0s] start processing file" % (label, file_path))
-                tags, y = self.lines2tags(lines,label,seq_len=self.seq_len)
-                list_of_tuples.append((tags, y))
+            with open(label2merge_dict[label], 'r') as file:
 
-        logging.info("start compressing everything to H5")
-        tags, y = self.concat_and_shuffle(list_of_tuples)
-        self.save_h5(tags,y,h5_path=os.path.join(self.output_dir,'fff.h5')) #FIXME - TEMP
+                for iter in tqdm(range(num_iters+1)):
 
-        self.h5_sanity_check(h5_path=os.path.join(self.output_dir,'fff.h5')) #FIXME - TEMP
+                    num_lines = self.max_rows_in_memory
+                    if iter == num_iters:
+                        num_lines = last_iter_size
+
+                    lines = [file.readline().replace('\n','').replace('\t','').replace('\r','') for _ in range(num_lines)]
+                    tags, y = self.lines2tags(lines, label, seq_len=self.seq_len)
+                    self.h5_append(tags,y,iter,h5_path)
+
+        # save and shuffle output
+        self.h5_shuffle(h5_path)
+        self.json_dump(self.num2label_dict,json_path=json_path)
+
+        #check output
+        self.h5_sanity_check(h5_path=h5_path,json_path=json_path)
 
         self.logger_announce('done handling h5 process')
 
-    def h5_sanity_check(self,h5_path):
+    def h5_sanity_check(self,h5_path,json_path):
 
         logging.info("[%0s] start h5_sanity_check"%h5_path)
+
+        with open(json_path, 'r') as f:
+            num2label = json.load(f)
 
         with h5py.File(h5_path, 'r') as h5:
 
@@ -413,7 +462,7 @@ class H5_data_handler(Data_handler):
 
             logging.info("some samples:")
 
-            for line in range(100,120):
+            for line in range(100,130):
                 #extract sentance
                 sent = ''
                 i = 0
@@ -423,17 +472,17 @@ class H5_data_handler(Data_handler):
                     else:
                         break
                     i += 1
-                logging.info(self.num2label_dict[int(h5['labels'][line][0])] + '\t\t' + sent)
+                logging.info(num2label[str(h5['labels'][line][0])] + '\t\t' + sent)
 
             labels = h5['labels']
             tags = h5['tags']
 
-            # spent some to time to try and load all the data at once
-            if self.debug_mode:
-                t0 = time.time()
-                labels = np.array(labels)
-                tags = np.array(tags)
-                logging.info("loading all data took [%0.1f SEC]"%(time.time() - t0))
+            # # spent some to time to try and load all the data at once
+            # if self.debug_mode:
+            #     t0 = time.time()
+            #     labels = np.array(labels)
+            #     tags = np.array(tags)
+            #     logging.info("loading all data took [%0.1f SEC]"%(time.time() - t0))
 
             logging.info("data size in memory is [%0.2f MB]"%(tags.shape[0] * (tags.shape[1] + labels.shape[1]) / (1024. * 1024.)))
             logging.info('labels histogram:')
@@ -448,7 +497,7 @@ def sandbox():
 if __name__ == '__main__':
     desc = "DATA PREPROCESS"
     parser = argparse.ArgumentParser(description=desc)
-    parser.add_argument('mode', type=str, choices=['reddit_parse', 'reddit_h5', 'news_h5', 'news_h5_eng_only'],
+    parser.add_argument('mode', type=str, choices=['reddit_parse', 'reddit', 'news', 'news_en_only'],
                         help='supported modes are {reddit_parse,reddit_h5,news_h5,news_h5_eng_only}')
     FLAGS = parser.parse_args()
 
@@ -469,32 +518,79 @@ if __name__ == '__main__':
 
         exit(0)
 
-    elif FLAGS.mode == 'reddit_h5':
-        pass
+    elif FLAGS.mode == 'reddit':
+        label2files = {'relationships':
+                            ['/Volumes/###/reddit/reddit_out/relationships.txt'],
+                       'nba':
+                            ['/Volumes/###/reddit/reddit_out/nba.txt'],
+                       'fitness':
+                           ['/Volumes/###/reddit/reddit_out/Fitness.txt'],
+                       'android':
+                           ['/Volumes/###/reddit/reddit_out/Android.txt'],
+                       'electronic_cigarette':
+                           ['/Volumes/###/reddit/reddit_out/electronic_cigarette.txt'],
+                       }
+        out_dir = '/Volumes/###/reddit/reddit_h5'
 
-    elif FLAGS.mode == 'news_h5':
+    elif FLAGS.mode == 'news':
 
         label2files = {'en_news':
-                       ['/Users/guytevet/Downloads/training-monolingual/news.2008.en.shuffled',
-                        '/Users/guytevet/Downloads/training-monolingual/news.2009.en.shuffled',
-                        '/Users/guytevet/Downloads/training-monolingual/news.2010.en.shuffled'],
+                       ['/Volumes/###/news/1-billion-word-language-modeling/europarl-v6.en',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2007.en.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2008.en.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2009.en.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2010.en.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2011.en.shuffled'],
                        'es_news':
-                       ['/Users/guytevet/Downloads/training-monolingual/news.2008.es.shuffled'],
+                       ['/Volumes/###/news/1-billion-word-language-modeling/europarl-v6.es',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2007.es.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2008.es.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2009.es.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2010.es.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2011.es.shuffled'],
                        'de_news':
-                       ['/Users/guytevet/Downloads/training-monolingual/news.2008.de.shuffled']
+                       ['/Volumes/###/news/1-billion-word-language-modeling/europarl-v6.de',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2007.de.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2008.de.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2009.de.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2010.de.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2011.de.shuffled'],
+                       'cs_news':
+                           ['/Volumes/###/news/1-billion-word-language-modeling/europarl-v6.cs',
+                            '/Volumes/###/news/1-billion-word-language-modeling/news.2007.cs.shuffled',
+                            '/Volumes/###/news/1-billion-word-language-modeling/news.2008.cs.shuffled',
+                            '/Volumes/###/news/1-billion-word-language-modeling/news.2009.cs.shuffled',
+                            '/Volumes/###/news/1-billion-word-language-modeling/news.2010.cs.shuffled',
+                            '/Volumes/###/news/1-billion-word-language-modeling/news.2011.cs.shuffled'],
+                       'fr_news':
+                           ['/Volumes/###/news/1-billion-word-language-modeling/europarl-v6.de',
+                            '/Volumes/###/news/1-billion-word-language-modeling/news.2007.fr.shuffled',
+                            '/Volumes/###/news/1-billion-word-language-modeling/news.2008.fr.shuffled',
+                            '/Volumes/###/news/1-billion-word-language-modeling/news.2009.fr.shuffled',
+                            '/Volumes/###/news/1-billion-word-language-modeling/news.2010.fr.shuffled',
+                            '/Volumes/###/news/1-billion-word-language-modeling/news.2011.fr.shuffled'],
                        }
 
         out_dir = '/Users/guytevet/Downloads/training-monolingual/h5_tmp'
 
-    elif FLAGS.mode == 'news_h5_en_only':
-        pass
+    elif FLAGS.mode == 'news_en_only':
+        label2files = {'en_news':
+                       ['/Volumes/###/news/1-billion-word-language-modeling/europarl-v6.en',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2007.en.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2008.en.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2009.en.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2010.en.shuffled',
+                        '/Volumes/###/news/1-billion-word-language-modeling/news.2011.en.shuffled']
+                       }
+        out_dir = '/Volumes/###/news/news_en_only_h5'
+
     else:
         raise NotImplementedError()
 
-    H5 = H5_data_handler(label2files_dict=label2files,
+    H5 = H5_data_handler(name=FLAGS.mode,label2files_dict=label2files,
                          output_dir=out_dir,
                          seq_len=64,
-                         debug_mode=True)
+                         debug_mode=False)
     H5.prepare_data()
 
 

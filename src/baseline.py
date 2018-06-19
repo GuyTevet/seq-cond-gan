@@ -10,8 +10,10 @@ import numpy as np
 import consts
 import data
 
+#local
 from ops import *
 from utils import *
+from runtime_process import *
 
 class baseline(object):
     model_name = "baseline"     # name for checkpoint
@@ -26,32 +28,40 @@ class baseline(object):
         self.batch_size = batch_size
         self.debug_mode = False
 
-        if dataset_name == 'sanity_data':
-            # parameters
-            self.embed_size = 512
-            self.hidden_size = self.embed_size
-            self.dropout_rate_for_train = 0.5
-            self.z_dim = self.hidden_size
-            self.seq_len = 32
+        if dataset_name == 'news_en_only':
 
-            # WGAN_GP parameter
-            self.lambd = 0.25       # The higher value, the more stable, but the slower convergence
-            self.disc_iters = 1     # The number of critic iterations for one-step of generator
+            self.dataset_h5_path = '../data/news_h5_seq-64_dict-ascii_classes-3.h5' #FIXME -TEMP!
+            self.dataset_json_path = '../data/news_h5_seq-64_dict-ascii_classes-3.json'  # FIXME -TEMP!
 
-            # train
-            self.learning_rate = 0.0002
-            self.beta1 = 0.5
 
-            # test
-            self.sample_num = 64  # number of generated sents to be saved
-
-            # load sanity_data
-            # self.data_X, self.data_y = load_mnist(self.dataset_name)
-
-            # get number of batches for a single epoch
-            # self.num_batches = len(self.data_X) // self.batch_size
         else:
             raise NotImplementedError
+
+        # arch parameters
+        self.embed_size = 512
+        self.hidden_size = self.embed_size
+        self.dropout_rate_for_train = 0.5
+        self.z_dim = self.hidden_size
+        self.seq_len = 32
+
+        # WGAN_GP parameter
+        self.lambd = 0.25  # The higher value, the more stable, but the slower convergence
+        self.disc_iters = 1  # The number of critic iterations for one-step of generator
+
+        # train
+        self.learning_rate = 0.0002
+        self.beta1 = 0.5
+
+        # test
+        self.sample_num = 64  # number of generated sents to be saved
+
+        # instance data handler
+        self.data_handler = Runtime_data_handler(h5_path=self.dataset_h5_path,
+                                                 seq_len=self.seq_len,
+                                                 batch_size=self.batch_size,
+                                                 use_labels=False)
+        self.betches_per_iter = 2
+        self.iters_per_epoch = self.data_handler.get_num_batches_per_epoch() // self.betches_per_iter
 
     def discriminator(self, x, max_len, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
@@ -241,17 +251,12 @@ class baseline(object):
         # summary writer
         self.writer = tf.summary.FileWriter(self.log_dir + '/' + self.model_name, self.sess.graph)
 
-        # load text
-        start_load = time.time()
-        self.text = data.load_sanity_data()
-        print("load data takes %0.2f [sec]"%(time.time()-start_load))
-        self.num_batches = len(self.text) // (self.batch_size * 2)
 
         # restore check-point if it exits
         could_load, checkpoint_counter = self.load(self.checkpoint_dir)
         if could_load:
-            start_epoch = (int)(checkpoint_counter / self.num_batches)
-            start_batch_id = checkpoint_counter - start_epoch * self.num_batches
+            start_epoch = (int)(checkpoint_counter / self.iters_per_epoch)
+            start_batch_id = checkpoint_counter - start_epoch * self.iters_per_epoch
             counter = checkpoint_counter
             print(" [*] Load SUCCESS")
         else:
@@ -265,22 +270,23 @@ class baseline(object):
         # loop for epoch
         start_time = time.time()
         for epoch in range(start_epoch, self.epoch):
+            self.data_handler.epoch_start(start_batch_id = start_batch_id)
             # self.visualize_results(epoch, max_len=32)  # for debug - max len remains constant and maximal
             #arrange data
             start_epoch_time = time.time()
             cur_max_len = max_len_list[epoch]
             print("===starting epoch [%0d] with [max_len=%0d]==="%(epoch,cur_max_len))
 
-            start_shuffling = time.time()
-            mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=cur_max_len, seq_len=self.seq_len,
-                                                            mode='th_extended')
-            print("create_shuffle_data takes %0.2f" % (time.time() - start_shuffling))
+            # start_shuffling = time.time()
+            # mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=cur_max_len, seq_len=self.seq_len,
+            #                                                 mode='th_extended')
+            # print("create_shuffle_data takes %0.2f" % (time.time() - start_shuffling))
 
             # get batch data
-            for idx in range(start_batch_id, self.num_batches):
-                batch_sents = feed_tags[idx*(self.batch_size*2):(idx+1)*(self.batch_size*2)]
-                batch_sents_generator = batch_sents[:self.batch_size]
-                batch_sents_discriminator = batch_sents[self.batch_size:]
+            for idx in range(start_batch_id, self.iters_per_epoch):
+
+                batch_sents_generator = self.data_handler.get_batch()
+                batch_sents_discriminator = self.data_handler.get_batch()
 
                 batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
                 batch_mask = mask_list[idx*(self.batch_size*2):(idx+1)*(self.batch_size*2)]
