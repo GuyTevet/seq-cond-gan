@@ -7,11 +7,13 @@ import os
 import time
 import tensorflow as tf
 import numpy as np
+
+#local
 import consts
 import data
-
 from ops import *
 from utils import *
+from runtime_process import *
 
 class acgan_based(object):
     model_name = "acgan_based"     # name for checkpoint
@@ -26,34 +28,63 @@ class acgan_based(object):
         self.batch_size = batch_size
         self.debug_mode = False
 
-        if dataset_name == 'sanity_data':
-            # parameters
-            self.embed_size = 512
-            self.class_embed_size = 32
-            self.class_num = 3
-            self.hidden_size = self.embed_size
-            self.dropout_rate_for_train = 0.5
-            self.z_dim = self.hidden_size
-            self.seq_len = 32
+        if dataset_name == 'sanity':
 
-            # WGAN_GP parameter
-            self.lambd = 0.25       # The higher value, the more stable, but the slower convergence
-            self.disc_iters = 1     # The number of critic iterations for one-step of generator
+            self.dataset_h5_path = '../data/sanity_seq-64_dict-ascii_classes-1.h5'
+            self.dataset_json_path = '../data/sanity_seq-64_dict-ascii_classes-1.json'
+            self.class_num = 1
 
-            # train
-            self.learning_rate = 0.0002
-            self.beta1 = 0.5
+        elif dataset_name == 'short':
 
-            # test
-            self.sample_num = 64  # number of generated sents to be saved
+            self.dataset_h5_path = '../data/short_seq-64_dict-ascii_classes-1.h5'
+            self.dataset_json_path = '../data/short_seq-64_dict-ascii_classes-1.json'
+            self.class_num = 1
 
-            # load sanity_data
-            # self.data_X, self.data_y = load_mnist(self.dataset_name)
+        elif dataset_name == 'news_en_only':
 
-            # get number of batches for a single epoch
-            # self.num_batches = len(self.data_X) // self.batch_size
+            self.dataset_h5_path = '../data/news_en_only_seq-64_dict-ascii_classes-1.h5'
+            self.dataset_json_path = '../data/news_en_only_seq-64_dict-ascii_classes-1.json'
+            self.class_num = 1
+
+        elif dataset_name == 'reddit':
+
+            self.dataset_h5_path = '../data/reddit_seq-64_dict-ascii_classes-5.h5'
+            self.dataset_json_path = '../data/reddit_seq-64_dict-ascii_classes-5.json'
+            self.class_num = 5
+
         else:
             raise NotImplementedError
+
+        # arch parameters
+        self.class_embed_size = 32
+        self.embed_size = 512 - self.class_embed_size
+        self.hidden_size = self.embed_size
+        self.dropout_rate_for_train = 0.5
+        self.z_dim = self.hidden_size
+        self.seq_len = 32
+
+        # WGAN_GP parameter
+        self.lambd = 0.25       # The higher value, the more stable, but the slower convergence
+        self.disc_iters = 1     # The number of critic iterations for one-step of generator
+
+        # train
+        self.learning_rate = 0.0002
+        self.beta1 = 0.5
+
+        # test
+        self.sample_num = 64  # number of generated sents to be saved
+
+        # instance data handler
+        self.data_handler = Runtime_data_handler(h5_path=self.dataset_h5_path,
+                                                 seq_len=self.seq_len,
+                                                 max_len=self.seq_len,
+                                                 teacher_helping_mode='th_extended',
+                                                 use_var_len=True,
+                                                 batch_size=self.batch_size,
+                                                 use_labels=True)
+
+        self.betches_per_iter = 2
+        self.iters_per_epoch = self.data_handler.get_num_batches_per_epoch() // self.betches_per_iter
 
     def discriminator(self, x, max_len, is_training=True, reuse=False):
         # Network Architecture is exactly same as in infoGAN (https://arxiv.org/abs/1606.03657)
@@ -297,17 +328,12 @@ class acgan_based(object):
         # summary writer
         self.writer = tf.summary.FileWriter(self.log_dir + '/' + self.model_name, self.sess.graph)
 
-        # load text
-        start_load = time.time()
-        self.text = data.load_sanity_data()
-        print("load data takes %0.2f [sec]"%(time.time()-start_load))
-        self.num_batches = len(self.text) // (self.batch_size * 2)
 
         # restore check-point if it exits
         could_load, checkpoint_counter = self.load(self.checkpoint_dir)
         if could_load:
-            start_epoch = (int)(checkpoint_counter / self.num_batches)
-            start_batch_id = checkpoint_counter - start_epoch * self.num_batches
+            start_epoch = (int)(checkpoint_counter / self.iters_per_epoch)
+            start_batch_id = checkpoint_counter - start_epoch * self.iters_per_epoch
             counter = checkpoint_counter
             print(" [*] Load SUCCESS")
         else:
@@ -316,42 +342,38 @@ class acgan_based(object):
             counter = 1
             print(" [!] Load failed...")
 
-        max_len_list = sorted([1, 2, 4, 8, 16, 32] * (self.epoch//6+1))
+        max_len_list = sorted([1, 2, 4, 8, 16, 32] * (self.epoch//6))
 
         # loop for epoch
         start_time = time.time()
         for epoch in range(start_epoch, self.epoch):
-            # self.visualize_results(epoch, max_len=32)  # for debug - max len remains constant and maximal
-            #arrange data
+
             start_epoch_time = time.time()
             cur_max_len = max_len_list[epoch]
+
+            self.data_handler.epoch_start(start_batch_id = start_batch_id,
+                                          max_len=cur_max_len,
+                                          teacher_helping_mode='th_extended')
+
             print("===starting epoch [%0d] with [max_len=%0d]==="%(epoch,cur_max_len))
 
-            start_shuffling = time.time()
-            mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=cur_max_len, seq_len=self.seq_len,
-                                                            mode='th_extended')
-            print("create_shuffle_data takes %0.2f [sec]" % (time.time() - start_shuffling))
-
             # get batch data
-            for idx in range(start_batch_id, self.num_batches):
-                batch_sents = feed_tags[idx*(self.batch_size*2):(idx+1)*(self.batch_size*2)]
-                batch_sents_generator = batch_sents[:self.batch_size]
-                batch_sents_discriminator = batch_sents[self.batch_size:]
+            for idx in range(start_batch_id, self.iters_per_epoch):
 
+                batch_sents_generator, batch_class_generator, batch_mask_generator = self.data_handler.get_batch(create_mask=True)
+                batch_sents_discriminator, batch_class_discriminator = self.data_handler.get_batch(create_mask=False)
                 batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
-                batch_mask = mask_list[idx*(self.batch_size*2):(idx+1)*(self.batch_size*2)]
-                batch_mask_generator = batch_mask[:self.batch_size]
 
                 # update D network
                 _, summary_str, d_loss, q_loss,c_summary_str = self.sess.run([self.d_optim, self.d_sum, self.d_loss, self.q_loss, self.q_sum],
                                                feed_dict={self.discrimnator_input: batch_sents_discriminator,
                                                           self.generator_input: batch_sents_generator,
                                                           self.generator_mask: batch_mask_generator,
-                                                          self.generator_class: np.ones(self.batch_size, dtype=np.int32),
-                                                          self.discriminator_class: np.ones(self.batch_size, dtype=np.int32),
+                                                          self.generator_class: batch_class_generator,
+                                                          self.discriminator_class: batch_class_discriminator,
                                                           self.z: batch_z,
                                                           self.max_len: cur_max_len,
-                                                          self.dropout_ph: self.dropout_rate_for_train}) #FIXME - update generator and discriminator class
+                                                          self.dropout_ph: self.dropout_rate_for_train})
                 self.writer.add_summary(summary_str, counter)
                 self.writer.add_summary(c_summary_str, counter)
 
@@ -362,9 +384,9 @@ class acgan_based(object):
                                                            feed_dict={self.z: batch_z,
                                                                       self.generator_mask: batch_mask_generator,
                                                                       self.generator_input: batch_sents_generator,
-                                                                      self.generator_class: np.ones(self.batch_size, dtype=np.int32),
+                                                                      self.generator_class: batch_class_generator,
                                                                       self.max_len: cur_max_len,
-                                                                      self.dropout_ph: self.dropout_rate_for_train}) #FIXME - update generator class
+                                                                      self.dropout_ph: self.dropout_rate_for_train})
                     self.writer.add_summary(summary_str, counter)
 
                 # #for debug
@@ -386,18 +408,17 @@ class acgan_based(object):
 
 
                 # display training status
-                print("\rEpoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f, q_loss: %.8f" \
-                      % (epoch, idx, self.num_batches, time.time() - start_time, d_loss, g_loss, q_loss),end='')
+                print("\rEpoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
+                      % (epoch, idx, self.iters_per_epoch, time.time() - start_time, d_loss, g_loss),end='')
 
                 # save training results for every 1000 steps
                 if np.mod(counter, 1000) == 0:
                     self.visualize_results(counter, max_len=32,description='step')
 
-
-
             # After an epoch, start_batch_id is set to zero
             # non-zero value is only for the first epoch after loading pre-trained model
             start_batch_id = 0
+            print('')
 
             # save model
             self.save(self.checkpoint_dir, counter)
@@ -405,8 +426,10 @@ class acgan_based(object):
             # show temporal results
             self.visualize_results(epoch,max_len=32) # for debug - max len remains constant and maximal
 
-            print("\rEpoch SUMMARY: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f, q_loss: %.8f" \
-                  % (epoch, idx, self.num_batches, time.time() - start_epoch_time, d_loss, g_loss, q_loss))
+            self.data_handler.epoch_end()
+
+            # print("\rEpoch SUMMARY: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
+            #       % (epoch, idx, self.iters_per_epoch, time.time() - start_epoch_time, d_loss, g_loss))
 
         # save model for final step
         self.save(self.checkpoint_dir, counter)
@@ -422,9 +445,9 @@ class acgan_based(object):
         samples = self.sess.run(self.fake_sents, feed_dict={self.z: z_sample,
                                                             self.generator_mask: batch_empty_mask,
                                                             self.generator_input: batch_empty_data,
-                                                            self.generator_class: np.ones(self.batch_size, dtype=np.int32),
+                                                            self.generator_class: np.random.randint(self.class_num, size=self.batch_size),
                                                             self.max_len: max_len,
-                                                            self.dropout_ph: 1.0}) #FIXME - update generator class
+                                                            self.dropout_ph: 1.0})
         tags = np.argmax(samples, axis=2).astype(int)
         sentences = []
 
@@ -440,10 +463,10 @@ class acgan_based(object):
 
         if not os.path.isdir('results'):
             os.mkdir('results')
-        if not os.path.isdir(os.path.join('results', 'baseline')):
-            os.mkdir(os.path.join('results', 'baseline'))
+        if not os.path.isdir(os.path.join(self.result_dir, self.model_name)):
+            os.mkdir(os.path.join(self.result_dir, self.model_name))
 
-        save_path = os.path.join('results', 'baseline', 'results_' + description +'_' + str(epoch) + '.txt')
+        save_path = os.path.join(self.result_dir, self.model_name, 'results_' + description + '_' + str(epoch) + '.txt')
         with open(save_path, 'w') as file:
             file.write(text)
 

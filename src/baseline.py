@@ -8,7 +8,6 @@ import time
 import tensorflow as tf
 import numpy as np
 
-
 #local
 import consts
 import data

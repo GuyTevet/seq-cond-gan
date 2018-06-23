@@ -68,7 +68,7 @@ class Runtime_data_handler(object):
 
         with h5py.File(self.h5_path, 'r') as h5:
             tags = np.array(h5['tags'][self.h5_curr_batch_pointer:self.h5_curr_batch_pointer+self.batch_size])
-            labels = np.array(h5['labels'][self.h5_curr_batch_pointer:self.h5_curr_batch_pointer+self.batch_size])
+            labels = np.squeeze(h5['labels'][self.h5_curr_batch_pointer:self.h5_curr_batch_pointer+self.batch_size])
 
         # print("batch [%0d : %0d]"%(self.h5_curr_batch_pointer,self.h5_curr_batch_pointer+self.batch_size)) # for debug
 
