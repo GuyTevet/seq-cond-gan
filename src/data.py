@@ -83,6 +83,8 @@ def load_sanity_data():
         text = file.read()
     sents = text2sents(text[:100000000])
     tag_sents = []
+
+
     for sent in sents:
         tag_sent = []
         for char in sent:

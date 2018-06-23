@@ -30,26 +30,23 @@ class acgan_based(object):
 
         if dataset_name == 'sanity':
 
-            self.dataset_h5_path = '../data/sanity_seq-64_dict-ascii_classes-1.h5'
-            self.dataset_json_path = '../data/sanity_seq-64_dict-ascii_classes-1.json'
-            self.class_num = 1
+            self.dataset_h5_path = os.path.join('..','data','sanity_seq-64_dict-ascii_classes-1.h5')
+            self.dataset_json_path = os.path.join('..','data','sanity_seq-64_dict-ascii_classes-1.json')
 
         elif dataset_name == 'short':
 
-            self.dataset_h5_path = '../data/short_seq-64_dict-ascii_classes-1.h5'
-            self.dataset_json_path = '../data/short_seq-64_dict-ascii_classes-1.json'
-            self.class_num = 1
+            self.dataset_h5_path = os.path.join('..','data','short_seq-64_dict-ascii_classes-1.h5')
+            self.dataset_json_path = os.path.join('..','data','short_seq-64_dict-ascii_classes-1.json')
 
         elif dataset_name == 'news_en_only':
 
-            self.dataset_h5_path = '../data/news_en_only_seq-64_dict-ascii_classes-1.h5'
-            self.dataset_json_path = '../data/news_en_only_seq-64_dict-ascii_classes-1.json'
-            self.class_num = 1
+            self.dataset_h5_path = os.path.join('..','data','news_en_only_seq-64_dict-ascii_classes-1.h5')
+            self.dataset_json_path = os.path.join('..','data','news_en_only_seq-64_dict-ascii_classes-1.json')
 
         elif dataset_name == 'reddit':
 
-            self.dataset_h5_path = '../data/reddit_seq-64_dict-ascii_classes-5.h5'
-            self.dataset_json_path = '../data/reddit_seq-64_dict-ascii_classes-5.json'
+            self.dataset_h5_path = os.path.join('..','data','reddit_seq-64_dict-ascii_classes-5.h5')
+            self.dataset_json_path = os.path.join('..','data','reddit_seq-64_dict-ascii_classes-5.json')
             self.class_num = 5
 
         else:
