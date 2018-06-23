@@ -500,8 +500,8 @@ def sandbox():
 if __name__ == '__main__':
     desc = "DATA PREPROCESS"
     parser = argparse.ArgumentParser(description=desc)
-    parser.add_argument('mode', type=str, choices=['reddit_parse', 'reddit', 'news', 'news_en_only'],
-                        help='supported modes are {reddit_parse,reddit_h5,news_h5,news_h5_eng_only}')
+    parser.add_argument('mode', type=str, choices=['reddit_parse', 'reddit', 'news', 'news_en_only','sanity','short'],
+                        help='supported modes are {reddit_parse,reddit_h5,news_h5,news_h5_eng_only,sanity,short}')
     FLAGS = parser.parse_args()
 
     if FLAGS.mode == 'reddit_parse':
@@ -587,6 +587,17 @@ if __name__ == '__main__':
                        }
         out_dir = '/Volumes/###/news/news_en_only_h5'
 
+    elif FLAGS.mode == 'short':
+        label2files = {'en_news':
+                       ['/Volumes/###/news/1-billion-word-language-modeling/europarl-v6.en']
+                       }
+        out_dir = '/Volumes/###/news/short_h5'
+
+    elif FLAGS.mode == 'sanity':
+        label2files = {'en_news':
+                       ['/Volumes/###/news/1-billion-word-language-modeling/sanity.en']
+                       }
+        out_dir = '/Volumes/###/news/sanity_h5'
     else:
         raise NotImplementedError()
 

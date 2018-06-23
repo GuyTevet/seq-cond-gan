@@ -6,7 +6,7 @@ import random
 #consts
 ASCII_FIRST = 32
 ASCII_LAST = 126
-DICT_TYPE = 'ascii' #supporting {ascii,simple}
+DICT_TYPE = 'ascii' #supporting {standard,simple}
 
 #create char dict
 if DICT_TYPE == 'simple':

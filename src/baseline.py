@@ -20,6 +20,7 @@ class baseline(object):
     model_name = "baseline"     # name for checkpoint
 
     def __init__(self, sess, epoch, batch_size, z_dim, dataset_name, checkpoint_dir, result_dir, log_dir):
+
         self.sess = sess
         self.dataset_name = dataset_name
         self.checkpoint_dir = checkpoint_dir
@@ -29,10 +30,20 @@ class baseline(object):
         self.batch_size = batch_size
         self.debug_mode = False
 
-        if dataset_name == 'news_en_only':
+        if dataset_name == 'sanity':
 
-            self.dataset_h5_path = '../data/news_h5_seq-64_dict-ascii_classes-3.h5' #FIXME -TEMP!
-            self.dataset_json_path = '../data/news_h5_seq-64_dict-ascii_classes-3.json'  # FIXME -TEMP!
+            self.dataset_h5_path = '../data/sanity_seq-64_dict-ascii_classes-1.h5'
+            self.dataset_json_path = '../data/sanity_seq-64_dict-ascii_classes-1.json'
+
+        elif dataset_name == 'short':
+
+            self.dataset_h5_path = '../data/short_seq-64_dict-ascii_classes-1.h5'
+            self.dataset_json_path = '../data/short_seq-64_dict-ascii_classes-1.json'
+
+        elif dataset_name == 'news_en_only':
+
+            self.dataset_h5_path = '../data/news_en_only_seq-64_dict-ascii_classes-1.h5'
+            self.dataset_json_path = '../data/news_en_only_seq-64_dict-ascii_classes-1.json'
 
         else:
             raise NotImplementedError
@@ -269,7 +280,7 @@ class baseline(object):
             counter = 1
             print(" [!] Load failed...")
 
-        max_len_list = sorted([1, 2, 4, 8, 16, 32] * (self.epoch//6+1))
+        max_len_list = sorted([1, 2, 4, 8, 16, 32] * (self.epoch//6))
 
         # loop for epoch
         start_time = time.time()
@@ -283,11 +294,6 @@ class baseline(object):
                                           teacher_helping_mode='th_extended')
 
             print("===starting epoch [%0d] with [max_len=%0d]==="%(epoch,cur_max_len))
-
-            # start_shuffling = time.time()
-            # mask_list, feed_tags = data.create_shuffle_data(self.text, max_len=cur_max_len, seq_len=self.seq_len,
-            #                                                 mode='th_extended')
-            # print("create_shuffle_data takes %0.2f" % (time.time() - start_shuffling))
 
             # get batch data
             for idx in range(start_batch_id, self.iters_per_epoch):
@@ -346,6 +352,7 @@ class baseline(object):
             # After an epoch, start_batch_id is set to zero
             # non-zero value is only for the first epoch after loading pre-trained model
             start_batch_id = 0
+            print('')
 
             # save model
             self.save(self.checkpoint_dir, counter)
@@ -355,8 +362,8 @@ class baseline(object):
 
             self.data_handler.epoch_end()
 
-            print("\rEpoch SUMMARY: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
-                  % (epoch, idx, self.num_batches, time.time() - start_epoch_time, d_loss, g_loss))
+            # print("\rEpoch SUMMARY: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
+            #       % (epoch, idx, self.iters_per_epoch, time.time() - start_epoch_time, d_loss, g_loss))
 
         # save model for final step
         self.save(self.checkpoint_dir, counter)
@@ -389,10 +396,10 @@ class baseline(object):
 
         if not os.path.isdir('results'):
             os.mkdir('results')
-        if not os.path.isdir(os.path.join('results', 'baseline')):
-            os.mkdir(os.path.join('results', 'baseline'))
+        if not os.path.isdir(os.path.join(self.result_dir, self.model_name)):
+            os.mkdir(os.path.join(self.result_dir, self.model_name))
 
-        save_path = os.path.join('results', 'baseline', 'results_' + description + '_' + str(epoch) + '.txt')
+        save_path = os.path.join(self.result_dir, self.model_name, 'results_' + description + '_' + str(epoch) + '.txt')
         with open(save_path, 'w') as file:
             file.write(text)
 
