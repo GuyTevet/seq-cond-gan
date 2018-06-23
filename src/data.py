@@ -18,6 +18,8 @@ if DICT_TYPE == 'simple':
     chars = space + a_z + A_Z + one_zero + special
 elif DICT_TYPE == 'ascii':
     chars = [chr(i) for i in range(32,127)] + ['UNK', 'START' , 'END']
+elif DICT_TYPE == 'latin':
+    chars = [chr(i) for i in range(32, 127) + range(224,256)] + ['UNK', 'START', 'END'] # is thiss enough?
 else:
     raise NotImplementedError()
 

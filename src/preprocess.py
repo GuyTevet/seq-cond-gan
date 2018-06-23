@@ -343,15 +343,17 @@ class H5_data_handler(Data_handler):
             h5_labels = h5.create_dataset('labels',shape=(num_lines,1),
                                                dtype=np.uint8, compression="gzip")
 
-    def h5_append(self,tags,labels,iter,h5_path):
+            h5_labels[...] = -1 * np.ones(shape=h5_labels.shape, dtype=np.uint8) # inserting invalid label for safety
 
-        start_idx = self.max_rows_in_memory * iter
+    def h5_append(self,tags,labels,iter,num_label,rows_per_label,h5_path):
+
+        label_offset = num_label * rows_per_label
+        start_idx = label_offset + self.max_rows_in_memory * iter
         end_idx = start_idx + labels.shape[0]
 
         with h5py.File(h5_path, 'a') as h5:
             h5['tags'][start_idx:end_idx,:] = tags
             h5['labels'][start_idx:end_idx, :] = labels
-
 
     def h5_shuffle(self,h5_path):
 
@@ -403,7 +405,8 @@ class H5_data_handler(Data_handler):
                 self.merge_shuffle_txt(source_list=self.label2files_dict[label],
                                        target=label2merge_dict[label])
 
-        # choose num of rows per label according to the shortest file
+        # choose num of rows per label according to the shortest file\
+        logging.info('choosing num of rows per label..')
         label2rows_dict = {}
         for label in label2merge_dict.keys():
             with open(label2merge_dict[label], "r") as f:
@@ -422,7 +425,7 @@ class H5_data_handler(Data_handler):
         # processing the merged files to h5
         self.h5_create(num_lines= rows_per_label * self.num_labels, h5_path=h5_path)
 
-        for label in label2merge_dict.keys():
+        for num_label, label in enumerate(label2merge_dict.keys()):
             logging.info("[%0s] start processing label"%label)
             logging.info("[%0s][%0s] start processing file" % (label, label2merge_dict[label]))
 
@@ -437,7 +440,7 @@ class H5_data_handler(Data_handler):
 
                     lines = [file.readline().replace('\n','').replace('\t','').replace('\r','') for _ in range(num_lines)]
                     tags, y = self.lines2tags(lines, label, seq_len=self.seq_len)
-                    self.h5_append(tags,y,iter,h5_path)
+                    self.h5_append(tags,y,iter,num_label,rows_per_label,h5_path)
 
         # save and shuffle output
         self.h5_shuffle(h5_path)
@@ -563,7 +566,7 @@ if __name__ == '__main__':
                             '/Volumes/###/news/1-billion-word-language-modeling/news.2010.cs.shuffled',
                             '/Volumes/###/news/1-billion-word-language-modeling/news.2011.cs.shuffled'],
                        'fr_news':
-                           ['/Volumes/###/news/1-billion-word-language-modeling/europarl-v6.de',
+                           ['/Volumes/###/news/1-billion-word-language-modeling/europarl-v6.fr',
                             '/Volumes/###/news/1-billion-word-language-modeling/news.2007.fr.shuffled',
                             '/Volumes/###/news/1-billion-word-language-modeling/news.2008.fr.shuffled',
                             '/Volumes/###/news/1-billion-word-language-modeling/news.2009.fr.shuffled',
@@ -571,7 +574,7 @@ if __name__ == '__main__':
                             '/Volumes/###/news/1-billion-word-language-modeling/news.2011.fr.shuffled'],
                        }
 
-        out_dir = '/Users/guytevet/Downloads/training-monolingual/h5_tmp'
+        out_dir = '/Volumes/###/news/news_h5'
 
     elif FLAGS.mode == 'news_en_only':
         label2files = {'en_news':

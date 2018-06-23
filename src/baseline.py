@@ -7,10 +7,11 @@ import os
 import time
 import tensorflow as tf
 import numpy as np
-import consts
-import data
+
 
 #local
+import consts
+import data
 from ops import *
 from utils import *
 from runtime_process import *
@@ -32,7 +33,6 @@ class baseline(object):
 
             self.dataset_h5_path = '../data/news_h5_seq-64_dict-ascii_classes-3.h5' #FIXME -TEMP!
             self.dataset_json_path = '../data/news_h5_seq-64_dict-ascii_classes-3.json'  # FIXME -TEMP!
-
 
         else:
             raise NotImplementedError
@@ -58,8 +58,12 @@ class baseline(object):
         # instance data handler
         self.data_handler = Runtime_data_handler(h5_path=self.dataset_h5_path,
                                                  seq_len=self.seq_len,
+                                                 max_len=self.seq_len,
+                                                 teacher_helping_mode='th_extended',
+                                                 use_var_len=True,
                                                  batch_size=self.batch_size,
                                                  use_labels=False)
+
         self.betches_per_iter = 2
         self.iters_per_epoch = self.data_handler.get_num_batches_per_epoch() // self.betches_per_iter
 
@@ -270,11 +274,14 @@ class baseline(object):
         # loop for epoch
         start_time = time.time()
         for epoch in range(start_epoch, self.epoch):
-            self.data_handler.epoch_start(start_batch_id = start_batch_id)
-            # self.visualize_results(epoch, max_len=32)  # for debug - max len remains constant and maximal
-            #arrange data
+
             start_epoch_time = time.time()
             cur_max_len = max_len_list[epoch]
+
+            self.data_handler.epoch_start(start_batch_id = start_batch_id,
+                                          max_len=cur_max_len,
+                                          teacher_helping_mode='th_extended')
+
             print("===starting epoch [%0d] with [max_len=%0d]==="%(epoch,cur_max_len))
 
             # start_shuffling = time.time()
@@ -285,12 +292,9 @@ class baseline(object):
             # get batch data
             for idx in range(start_batch_id, self.iters_per_epoch):
 
-                batch_sents_generator = self.data_handler.get_batch()
-                batch_sents_discriminator = self.data_handler.get_batch()
-
+                batch_sents_generator, batch_mask_generator = self.data_handler.get_batch(create_mask=True)
+                batch_sents_discriminator = self.data_handler.get_batch(create_mask=False)
                 batch_z = np.random.normal(0, 1, [self.batch_size, self.z_dim]).astype(np.float32)
-                batch_mask = mask_list[idx*(self.batch_size*2):(idx+1)*(self.batch_size*2)]
-                batch_mask_generator = batch_mask[:self.batch_size]
 
                 # update D network
                 _, summary_str, d_loss = self.sess.run([self.d_optim, self.d_sum, self.d_loss],
@@ -333,7 +337,7 @@ class baseline(object):
 
                 # display training status
                 print("\rEpoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
-                      % (epoch, idx, self.num_batches, time.time() - start_time, d_loss, g_loss),end='')
+                      % (epoch, idx, self.iters_per_epoch, time.time() - start_time, d_loss, g_loss),end='')
 
                 # save training results for every 1000 steps
                 if np.mod(counter, 1000) == 0:
@@ -348,6 +352,8 @@ class baseline(object):
 
             # show temporal results
             self.visualize_results(epoch,max_len=32) # for debug - max len remains constant and maximal
+
+            self.data_handler.epoch_end()
 
             print("\rEpoch SUMMARY: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
                   % (epoch, idx, self.num_batches, time.time() - start_epoch_time, d_loss, g_loss))
