@@ -7,6 +7,7 @@ import os
 import time
 import tensorflow as tf
 import numpy as np
+import json
 
 #local
 import consts
@@ -47,7 +48,6 @@ class acgan_based(object):
 
             self.dataset_h5_path = os.path.join('..','data','reddit_seq-64_dict-ascii_classes-5.h5')
             self.dataset_json_path = os.path.join('..','data','reddit_seq-64_dict-ascii_classes-5.json')
-            self.class_num = 5
 
         else:
             raise NotImplementedError
@@ -79,6 +79,13 @@ class acgan_based(object):
                                                  use_var_len=True,
                                                  batch_size=self.batch_size,
                                                  use_labels=True)
+
+        # get class dict
+        with open(self.dataset_json_path,'r') as file:
+            self.class_dict = json.load(file)
+            self.class_dict = {int(key): self.class_dict[key] for key in self.class_dict.keys()}
+
+        self.class_num = len(self.class_dict.keys())
 
         self.betches_per_iter = 2
         self.iters_per_epoch = self.data_handler.get_num_batches_per_epoch() // self.betches_per_iter
@@ -438,11 +445,12 @@ class acgan_based(object):
 
         z_sample = np.random.normal(0, 1, size=(self.batch_size, self.z_dim))
         batch_empty_mask, batch_empty_data = data.create_empty_data(sent_num=self.batch_size,seq_len=self.seq_len,max_len=max_len)
+        batch_empty_class = np.random.randint(self.class_num, size=self.batch_size)
 
         samples = self.sess.run(self.fake_sents, feed_dict={self.z: z_sample,
                                                             self.generator_mask: batch_empty_mask,
                                                             self.generator_input: batch_empty_data,
-                                                            self.generator_class: np.random.randint(self.class_num, size=self.batch_size),
+                                                            self.generator_class: batch_empty_class,
                                                             self.max_len: max_len,
                                                             self.dropout_ph: 1.0})
         tags = np.argmax(samples, axis=2).astype(int)
@@ -450,7 +458,7 @@ class acgan_based(object):
 
         for sample_idx in range(tot_num_samples):
             char_idx = 1
-            sent = ''
+            sent = self.class_dict[batch_empty_class[sample_idx]] + '\t'
             while tags[sample_idx, char_idx].astype(int) != data.END_TAG:
                 sent += data.tag2char(int(tags[sample_idx, char_idx].astype(int)))
                 char_idx += 1
