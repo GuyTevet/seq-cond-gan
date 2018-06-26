@@ -346,7 +346,7 @@ class baseline(object):
 
                 # save training results for every 1000 steps
                 if np.mod(counter, 1000) == 0:
-                    self.visualize_results(counter, max_len=32,description='step')
+                    self.visualize_results(counter, max_len=self.seq_len,description='step') # for debug - max len remains constant and maximal
 
             # After an epoch, start_batch_id is set to zero
             # non-zero value is only for the first epoch after loading pre-trained model
@@ -357,7 +357,7 @@ class baseline(object):
             self.save(self.checkpoint_dir, counter)
 
             # show temporal results
-            self.visualize_results(epoch,max_len=32) # for debug - max len remains constant and maximal
+            self.visualize_results(epoch,max_len=self.seq_len) # for debug - max len remains constant and maximal
 
             self.data_handler.epoch_end()
 
@@ -393,8 +393,6 @@ class baseline(object):
 
         text = '\n'.join(sentences)
 
-        if not os.path.isdir('results'):
-            os.mkdir('results')
         if not os.path.isdir(os.path.join(self.result_dir, self.model_name)):
             os.mkdir(os.path.join(self.result_dir, self.model_name))
 

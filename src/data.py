@@ -6,7 +6,7 @@ import random
 #consts
 ASCII_FIRST = 32
 ASCII_LAST = 126
-DICT_TYPE = 'ascii' #supporting {standard,simple}
+DICT_TYPE = 'ascii' #supporting {ascii,latin,simple}
 
 #create char dict
 if DICT_TYPE == 'simple':
@@ -19,7 +19,7 @@ if DICT_TYPE == 'simple':
 elif DICT_TYPE == 'ascii':
     chars = [chr(i) for i in range(32,127)] + ['UNK', 'START' , 'END']
 elif DICT_TYPE == 'latin':
-    chars = [chr(i) for i in range(32, 127) + range(224,256)] + ['UNK', 'START', 'END'] # is thiss enough?
+    chars = [chr(i) for i in range(32, 127) + range(191,253)] + ['UNK', 'START', 'END'] # is thiss enough?
 else:
     raise NotImplementedError()
 
@@ -111,7 +111,7 @@ def create_empty_data(sent_num,seq_len,max_len):
     for i in range(sent_num):
 
         #mask of the desired sentence length
-        window_size = random.randrange(1, max_len + 1)
+        window_size = max_len
         window_offset = 0
         mask = [0] * (window_offset + 1) + [1] * (window_size) + [0] * (seq_len - window_size - window_offset + 1)
         assert len(mask) == seq_len + 2
@@ -127,33 +127,49 @@ def test():
         tag = char2tag(char)
         print(str(tag) + '\t' + tag2char(tag))
 
-    #chars = [tag2char(i) for i in range(ASCII_LEN + 1)]
-    hist = [0] * (len(chars))
-
-
-    with open(sanity_text_path,'r', encoding="utf8") as file:
-        text = file.read()
-        sents = text2sents(text)
-        print('sanity text len: ' + str(len(text)))
-
-    for sent in sents[:10000]:
-        for char in sent:
-            hist[char2tag(char)] += 1
-
-    for i in range(len(chars)):
-        print(chars[i] + '\t' + str(hist[i]))
-
-    print('rare tags')
-    for i in range(len(chars)):
-        if hist[i] < 10:
-            print(chars[i] + '\t' + str(hist[i]) + '\t' + str(char_dict[chars[i]]))
+    # #chars = [tag2char(i) for i in range(ASCII_LEN + 1)]
+    # hist = [0] * (len(chars))
+    #
+    #
+    # with open(sanity_text_path,'r', encoding="utf8") as file:
+    #     text = file.read()
+    #     sents = text2sents(text)
+    #     print('sanity text len: ' + str(len(text)))
+    #
+    # for sent in sents[:10000]:
+    #     for char in sent:
+    #         hist[char2tag(char)] += 1
+    #
+    # for i in range(len(chars)):
+    #     print(chars[i] + '\t' + str(hist[i]))
+    #
+    # print('rare tags')
+    # for i in range(len(chars)):
+    #     if hist[i] < 10:
+    #         print(chars[i] + '\t' + str(hist[i]) + '\t' + str(char_dict[chars[i]]))
 
     # feed_tags , len_list = text2feed_tags(text[:100000],is_var_len=True,max_len=32)
     # mask_list = create_text_mask(len_list,max_len=32,mode='th_legacy')
 
-    text = load_sanity_data()
-    mask_list, feed_tags = create_shuffle_data(text,max_len=4,seq_len=32,mode='full')
-    a=1
+    # text = load_sanity_data()
+    # mask_list, feed_tags = create_shuffle_data(text,max_len=4,seq_len=32,mode='full')
+
+    for lang in ['en','es','cs','de','fr']:
+        raw_hist = {}
+
+        with open(os.path.join('..','data','europarl-v6.' + lang), 'r', encoding="utf8") as file:
+            text = file.read(1000000)
+
+        for char in text:
+            raw_hist[ord(char)] = raw_hist.get(ord(char),0) + 1
+
+        sorted_hist = [(k, chr(k) ,raw_hist[k]) for k in sorted(raw_hist)]
+
+        print('\n\nshowing ' + lang + ' dict:')
+        for e in sorted_hist:
+            print(str(e))
+
+
 
 
 if __name__ == '__main__':
